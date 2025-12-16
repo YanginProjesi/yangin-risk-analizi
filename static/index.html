@@ -1,1 +1,733 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="TÜBİTAK Projesi - Türkiye Yangın Tespit ve Kontrol Merkezi">
+    <meta name="theme-color" content="#0056b3">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Yangın Risk">
+    
+    <title>Türkiye Yangın Tespit ve Kontrol Merkezi - TÜBİTAK Projesi</title>
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.json">
+    
+    <!-- Apple Touch Icons -->
+    <link rel="apple-touch-icon" href="https://yangin-risk-analizi.onrender.com/icon-192.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="https://yangin-risk-analizi.onrender.com/icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="https://yangin-risk-analizi.onrender.com/icon-512.png">
+    
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔥 Türkiye Yangın Tespit ve Kontrol Merkezi</h1>
+            <p class="subtitle">TÜBİTAK 2204-B Projesi</p>
+        </header>
 
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="dashboard">📊 İzleme Panosu</button>
+            <button class="tab-btn" data-tab="map">🗺️ Harita</button>
+            <button class="tab-btn" data-tab="simulation">🎮 Yangın Simülasyonu</button>
+            <button class="tab-btn" data-tab="history">📊 Yangın Tarihçesi</button>
+            <button class="tab-btn" data-tab="precautions">⚠️ Önlemler</button>
+            <button class="tab-btn" data-tab="education">📚 Eğitim</button>
+        </nav>
+        
+        <!-- AI Asistan Floating Button -->
+        <button class="ai-assistant-float-btn" id="aiAssistantFloatBtn" onclick="openAIChatbot()">
+            <div class="ai-float-icon">🤖</div>
+            <div class="ai-float-text">AI Asistanına Sor</div>
+        </button>
+
+        <!-- İzleme Panosu Tab -->
+        <div id="dashboard" class="tab-content active">
+            <div class="status-alert" id="statusAlert"></div>
+            
+            <div class="sensor-grid">
+                <div class="sensor-card">
+                    <h3>🌡️ Sıcaklık Sensörü</h3>
+                    <div class="sensor-value" id="temperature">25°C</div>
+                    <div class="sensor-status" id="tempStatus">Normal</div>
+                    <canvas id="tempChart"></canvas>
+                </div>
+
+                <div class="sensor-card">
+                    <h3>💨 Duman Sensörü</h3>
+                    <div class="sensor-value" id="smoke">0 PPM</div>
+                    <div class="sensor-status" id="smokeStatus">Normal</div>
+                    <canvas id="smokeChart"></canvas>
+                </div>
+
+                <div class="sensor-card">
+                    <h3>🔥 Yangın Riski</h3>
+                    <div class="sensor-value" id="fireRisk">Düşük</div>
+                    <div class="risk-meter">
+                        <div class="risk-bar" id="riskBar"></div>
+                    </div>
+                    <div class="sensor-status" id="riskStatus">Güvenli</div>
+                </div>
+
+                <div class="sensor-card" style="max-height: none; min-height: auto;">
+                    <h3>📍 Konum</h3>
+                    <select id="citySelect" class="city-select" onchange="changeCity()" style="font-size: 0.9em; padding: 8px; margin-bottom: 10px;">
+                        <option value="turkiye">Türkiye Genel</option>
+                        <option value="adana">Adana</option>
+                        <option value="adiyaman">Adıyaman</option>
+                        <option value="afyonkarahisar">Afyonkarahisar</option>
+                        <option value="agri">Ağrı</option>
+                        <option value="aksaray">Aksaray</option>
+                        <option value="amasya">Amasya</option>
+                        <option value="ankara" selected>Ankara</option>
+                        <option value="antalya">Antalya</option>
+                        <option value="ardahan">Ardahan</option>
+                        <option value="artvin">Artvin</option>
+                        <option value="aydin">Aydın</option>
+                        <option value="balikesir">Balıkesir</option>
+                        <option value="bartin">Bartın</option>
+                        <option value="batman">Batman</option>
+                        <option value="bayburt">Bayburt</option>
+                        <option value="bilecik">Bilecik</option>
+                        <option value="bingol">Bingöl</option>
+                        <option value="bitlis">Bitlis</option>
+                        <option value="bolu">Bolu</option>
+                        <option value="burdur">Burdur</option>
+                        <option value="bursa">Bursa</option>
+                        <option value="canakkale">Çanakkale</option>
+                        <option value="cankiri">Çankırı</option>
+                        <option value="corum">Çorum</option>
+                        <option value="denizli">Denizli</option>
+                        <option value="diyarbakir">Diyarbakır</option>
+                        <option value="duzce">Düzce</option>
+                        <option value="edirne">Edirne</option>
+                        <option value="elazig">Elazığ</option>
+                        <option value="erzincan">Erzincan</option>
+                        <option value="erzurum">Erzurum</option>
+                        <option value="eskisehir">Eskişehir</option>
+                        <option value="gaziantep">Gaziantep</option>
+                        <option value="giresun">Giresun</option>
+                        <option value="gumushane">Gümüşhane</option>
+                        <option value="hakkari">Hakkari</option>
+                        <option value="hatay">Hatay</option>
+                        <option value="igdir">Iğdır</option>
+                        <option value="isparta">Isparta</option>
+                        <option value="istanbul">İstanbul</option>
+                        <option value="izmir">İzmir</option>
+                        <option value="kahramanmaras">Kahramanmaraş</option>
+                        <option value="karabuk">Karabük</option>
+                        <option value="karaman">Karaman</option>
+                        <option value="kars">Kars</option>
+                        <option value="kastamonu">Kastamonu</option>
+                        <option value="kayseri">Kayseri</option>
+                        <option value="kilis">Kilis</option>
+                        <option value="kirikkale">Kırıkkale</option>
+                        <option value="kirklareli">Kırklareli</option>
+                        <option value="kirsehir">Kırşehir</option>
+                        <option value="kocaeli">Kocaeli</option>
+                        <option value="konya">Konya</option>
+                        <option value="kutahya">Kütahya</option>
+                        <option value="malatya">Malatya</option>
+                        <option value="manisa">Manisa</option>
+                        <option value="mardin">Mardin</option>
+                        <option value="mersin">Mersin</option>
+                        <option value="mugla">Muğla</option>
+                        <option value="mus">Muş</option>
+                        <option value="nevsehir">Nevşehir</option>
+                        <option value="nigde">Niğde</option>
+                        <option value="ordu">Ordu</option>
+                        <option value="osmaniye">Osmaniye</option>
+                        <option value="rize">Rize</option>
+                        <option value="sakarya">Sakarya</option>
+                        <option value="samsun">Samsun</option>
+                        <option value="sanliurfa">Şanlıurfa</option>
+                        <option value="siirt">Siirt</option>
+                        <option value="sinop">Sinop</option>
+                        <option value="sirnak">Şırnak</option>
+                        <option value="sivas">Sivas</option>
+                        <option value="tekirdag">Tekirdağ</option>
+                        <option value="tokat">Tokat</option>
+                        <option value="trabzon">Trabzon</option>
+                        <option value="tunceli">Tunceli</option>
+                        <option value="usak">Uşak</option>
+                        <option value="van">Van</option>
+                        <option value="yalova">Yalova</option>
+                        <option value="yozgat">Yozgat</option>
+                        <option value="zonguldak">Zonguldak</option>
+                    </select>
+                    <div class="sensor-value" id="location">Ankara</div>
+                    <div class="sensor-status" id="activeMonitoring">Ankara - Aktif İzleme</div>
+                    <button class="btn" onclick="simulateFire()">🧪 Test Simülasyonu</button>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <h2>Zaman Serisi Grafiği</h2>
+                <canvas id="timeSeriesChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Map Tab -->
+        <div id="map" class="tab-content">
+            <div class="map-controls">
+                <h2>🗺️ 3D Yangın Risk Haritası - NASA FIRMS Stili</h2>
+                <div class="map-controls-row">
+                    <div class="city-selector-map">
+                        <label for="mapCitySelect">📍 Şehir Seçin:</label>
+                        <select id="mapCitySelect" class="city-select" onchange="changeMapCity()">
+                            <option value="turkiye">Türkiye Genel</option>
+                            <option value="adana">Adana</option>
+                            <option value="adiyaman">Adıyaman</option>
+                            <option value="afyonkarahisar">Afyonkarahisar</option>
+                            <option value="agri">Ağrı</option>
+                            <option value="aksaray">Aksaray</option>
+                            <option value="amasya">Amasya</option>
+                            <option value="ankara" selected>Ankara</option>
+                            <option value="antalya">Antalya</option>
+                            <option value="ardahan">Ardahan</option>
+                            <option value="artvin">Artvin</option>
+                            <option value="aydin">Aydın</option>
+                            <option value="balikesir">Balıkesir</option>
+                            <option value="bartin">Bartın</option>
+                            <option value="batman">Batman</option>
+                            <option value="bayburt">Bayburt</option>
+                            <option value="bilecik">Bilecik</option>
+                            <option value="bingol">Bingöl</option>
+                            <option value="bitlis">Bitlis</option>
+                            <option value="bolu">Bolu</option>
+                            <option value="burdur">Burdur</option>
+                            <option value="bursa">Bursa</option>
+                            <option value="canakkale">Çanakkale</option>
+                            <option value="cankiri">Çankırı</option>
+                            <option value="corum">Çorum</option>
+                            <option value="denizli">Denizli</option>
+                            <option value="diyarbakir">Diyarbakır</option>
+                            <option value="duzce">Düzce</option>
+                            <option value="edirne">Edirne</option>
+                            <option value="elazig">Elazığ</option>
+                            <option value="erzincan">Erzincan</option>
+                            <option value="erzurum">Erzurum</option>
+                            <option value="eskisehir">Eskişehir</option>
+                            <option value="gaziantep">Gaziantep</option>
+                            <option value="giresun">Giresun</option>
+                            <option value="gumushane">Gümüşhane</option>
+                            <option value="hakkari">Hakkari</option>
+                            <option value="hatay">Hatay</option>
+                            <option value="igdir">Iğdır</option>
+                            <option value="isparta">Isparta</option>
+                            <option value="istanbul">İstanbul</option>
+                            <option value="izmir">İzmir</option>
+                            <option value="kahramanmaras">Kahramanmaraş</option>
+                            <option value="karabuk">Karabük</option>
+                            <option value="karaman">Karaman</option>
+                            <option value="kars">Kars</option>
+                            <option value="kastamonu">Kastamonu</option>
+                            <option value="kayseri">Kayseri</option>
+                            <option value="kilis">Kilis</option>
+                            <option value="kirikkale">Kırıkkale</option>
+                            <option value="kirklareli">Kırklareli</option>
+                            <option value="kirsehir">Kırşehir</option>
+                            <option value="kocaeli">Kocaeli</option>
+                            <option value="konya">Konya</option>
+                            <option value="kutahya">Kütahya</option>
+                            <option value="malatya">Malatya</option>
+                            <option value="manisa">Manisa</option>
+                            <option value="mardin">Mardin</option>
+                            <option value="mersin">Mersin</option>
+                            <option value="mugla">Muğla</option>
+                            <option value="mus">Muş</option>
+                            <option value="nevsehir">Nevşehir</option>
+                            <option value="nigde">Niğde</option>
+                            <option value="ordu">Ordu</option>
+                            <option value="osmaniye">Osmaniye</option>
+                            <option value="rize">Rize</option>
+                            <option value="sakarya">Sakarya</option>
+                            <option value="samsun">Samsun</option>
+                            <option value="sanliurfa">Şanlıurfa</option>
+                            <option value="siirt">Siirt</option>
+                            <option value="sinop">Sinop</option>
+                            <option value="sirnak">Şırnak</option>
+                            <option value="sivas">Sivas</option>
+                            <option value="tekirdag">Tekirdağ</option>
+                            <option value="tokat">Tokat</option>
+                            <option value="trabzon">Trabzon</option>
+                            <option value="tunceli">Tunceli</option>
+                            <option value="usak">Uşak</option>
+                            <option value="van">Van</option>
+                            <option value="yalova">Yalova</option>
+                            <option value="yozgat">Yozgat</option>
+                            <option value="zonguldak">Zonguldak</option>
+                        </select>
+                    </div>
+                    <div class="map-style-controls">
+                        <label for="mapStyleSelect">🗺️ Harita Stili:</label>
+                        <select id="mapStyleSelect" class="city-select" onchange="changeMapStyle()">
+                            <option value="satellite">Uydu Görüntüsü</option>
+                            <option value="open-street-map">Açık Harita</option>
+                            <option value="carto-darkmatter">Koyu Harita</option>
+                            <option value="stamen-terrain">Topografik</option>
+                        </select>
+                    </div>
+                    <div class="view-controls">
+                        <label>
+                            <input type="checkbox" id="view3D" checked onchange="toggle3DView()">
+                            3D Görünüm
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div id="mapContainer" style="height: 700px; width: 100%; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);"></div>
+            <div class="map-legend">
+                <h3>Risk Seviyeleri:</h3>
+                <div class="legend-item"><span class="legend-color low"></span> Düşük Risk</div>
+                <div class="legend-item"><span class="legend-color medium"></span> Orta Risk</div>
+                <div class="legend-item"><span class="legend-color high"></span> Yüksek Risk</div>
+                <div class="legend-item"><span class="legend-color critical"></span> Kritik Risk</div>
+            </div>
+        </div>
+
+        <!-- Simulation Tab -->
+        <div id="simulation" class="tab-content">
+            <h2>🎮 Yangın Simülasyonu - Örnek Senaryo</h2>
+            <p class="subtitle">Bu simülasyon, sistemin yangın anında nasıl çalıştığını gösterir.</p>
+            <div class="sms-notice" style="background: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #2196F3;">
+                <strong>📱 SMS Bildirimi:</strong> Simülasyon başlatıldığında otomatik olarak SMS gönderilir.
+                <br><br>
+                <div id="smsServiceStatus" style="padding: 15px; margin: 10px 0; border-radius: 5px; background: #fff3cd; border: 2px solid #ff9800; display: none;">
+                    <strong>Servis Durumu:</strong> <span id="statusText">Kontrol ediliyor...</span>
+                </div>
+            </div>
+            
+            <div class="simulation-controls">
+                <button id="startSimulation" class="sim-btn" onclick="startFireSimulation()">▶️ Simülasyonu Başlat</button>
+                <button id="pauseSimulation" class="sim-btn" onclick="pauseFireSimulation()" disabled>⏸️ Duraklat</button>
+                <button id="resetSimulation" class="sim-btn" onclick="resetFireSimulation()">🔄 Sıfırla</button>
+                <div class="sim-speed-control">
+                    <label for="simSpeed">Hız:</label>
+                    <input type="range" id="simSpeed" min="1" max="5" value="1" onchange="updateSimSpeed()">
+                    <span id="speedValue">1x</span>
+                </div>
+            </div>
+
+            <div class="simulation-info">
+                <div class="sim-scenario">
+                    <h3>📋 Senaryo: Antalya - Manavgat Orman Yangını</h3>
+                    <p><strong>Başlangıç:</strong> Küçük bir çalı yangını</p>
+                    <p><strong>Konum:</strong> 36.8°K, 31.4°D</p>
+                    <p><strong>Tarih:</strong> <span id="simDate"></span></p>
+                    <p><strong>Hava Durumu:</strong> Sıcak, kuru, rüzgarlı</p>
+                </div>
+            </div>
+
+            <div class="simulation-stats">
+                <div class="sim-stat-card">
+                    <h4>🔥 Yanan Alan</h4>
+                    <div class="sim-value" id="simArea">0.01 km²</div>
+                    <div class="sim-progress">
+                        <div class="sim-progress-bar" id="simAreaBar"></div>
+                    </div>
+                </div>
+                <div class="sim-stat-card">
+                    <h4>⚡ Yayılma Hızı</h4>
+                    <div class="sim-value" id="simSpeedValue">2.5 km/h</div>
+                    <div class="sim-progress">
+                        <div class="sim-progress-bar" id="simSpeedBar"></div>
+                    </div>
+                </div>
+                <div class="sim-stat-card">
+                    <h4>🧭 Yayılma Yönü</h4>
+                    <div class="sim-value" id="simDirection">Güneydoğu</div>
+                    <div class="sim-compass" id="simCompass">
+                        <div class="compass-needle" id="compassNeedle"></div>
+                    </div>
+                </div>
+                <div class="sim-stat-card">
+                    <h4>⏱️ Geçen Süre</h4>
+                    <div class="sim-value" id="simTime">0:00</div>
+                    <div class="sim-timeline">
+                        <div class="timeline-marker" id="timelineMarker"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="simulation-charts">
+                <div class="sim-chart-container">
+                    <h3>📈 Yangın Gelişimi</h3>
+                    <canvas id="simChart"></canvas>
+                </div>
+            </div>
+
+            <div class="simulation-alerts" id="simAlerts">
+                <h3>⚠️ Uyarılar ve Bildirimler</h3>
+                <div id="simAlertList"></div>
+            </div>
+
+            <div class="simulation-map-container">
+                <h3>🗺️ Yangın Haritası</h3>
+                <div id="simMapContainer" style="height: 400px; width: 100%; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);"></div>
+            </div>
+        </div>
+
+        <!-- History Tab -->
+        <div id="history" class="tab-content">
+            <h2>📊 Şehirlere Göre Yangın Tarihçesi</h2>
+            <p class="subtitle">Türkiye'deki şehirlerin yıllara göre yangın geçmişi ve yanan alanlar</p>
+            
+            <div class="history-controls">
+                <div class="control-group">
+                    <label for="historyCitySelect">📍 Şehir Seçin:</label>
+                    <select id="historyCitySelect" class="city-select" onchange="loadHistoricalFires()">
+                        <option value="all">Tüm Şehirler</option>
+                        <option value="Adana">Adana</option>
+                        <option value="Adıyaman">Adıyaman</option>
+                        <option value="Afyonkarahisar">Afyonkarahisar</option>
+                        <option value="Ağrı">Ağrı</option>
+                        <option value="Aksaray">Aksaray</option>
+                        <option value="Amasya">Amasya</option>
+                        <option value="Ankara">Ankara</option>
+                        <option value="Antalya">Antalya</option>
+                        <option value="Ardahan">Ardahan</option>
+                        <option value="Artvin">Artvin</option>
+                        <option value="Aydın">Aydın</option>
+                        <option value="Balıkesir">Balıkesir</option>
+                        <option value="Bartın">Bartın</option>
+                        <option value="Batman">Batman</option>
+                        <option value="Bayburt">Bayburt</option>
+                        <option value="Bilecik">Bilecik</option>
+                        <option value="Bingöl">Bingöl</option>
+                        <option value="Bitlis">Bitlis</option>
+                        <option value="Bolu">Bolu</option>
+                        <option value="Burdur">Burdur</option>
+                        <option value="Bursa">Bursa</option>
+                        <option value="Çanakkale">Çanakkale</option>
+                        <option value="Çankırı">Çankırı</option>
+                        <option value="Çorum">Çorum</option>
+                        <option value="Denizli">Denizli</option>
+                        <option value="Diyarbakır">Diyarbakır</option>
+                        <option value="Düzce">Düzce</option>
+                        <option value="Edirne">Edirne</option>
+                        <option value="Elazığ">Elazığ</option>
+                        <option value="Erzincan">Erzincan</option>
+                        <option value="Erzurum">Erzurum</option>
+                        <option value="Eskişehir">Eskişehir</option>
+                        <option value="Gaziantep">Gaziantep</option>
+                        <option value="Giresun">Giresun</option>
+                        <option value="Gümüşhane">Gümüşhane</option>
+                        <option value="Hakkari">Hakkari</option>
+                        <option value="Hatay">Hatay</option>
+                        <option value="Iğdır">Iğdır</option>
+                        <option value="Isparta">Isparta</option>
+                        <option value="İstanbul">İstanbul</option>
+                        <option value="İzmir">İzmir</option>
+                        <option value="Kahramanmaraş">Kahramanmaraş</option>
+                        <option value="Karabük">Karabük</option>
+                        <option value="Karaman">Karaman</option>
+                        <option value="Kars">Kars</option>
+                        <option value="Kastamonu">Kastamonu</option>
+                        <option value="Kayseri">Kayseri</option>
+                        <option value="Kilis">Kilis</option>
+                        <option value="Kırıkkale">Kırıkkale</option>
+                        <option value="Kırklareli">Kırklareli</option>
+                        <option value="Kırşehir">Kırşehir</option>
+                        <option value="Kocaeli">Kocaeli</option>
+                        <option value="Konya">Konya</option>
+                        <option value="Kütahya">Kütahya</option>
+                        <option value="Malatya">Malatya</option>
+                        <option value="Manisa">Manisa</option>
+                        <option value="Mardin">Mardin</option>
+                        <option value="Mersin">Mersin</option>
+                        <option value="Muğla">Muğla</option>
+                        <option value="Muş">Muş</option>
+                        <option value="Nevşehir">Nevşehir</option>
+                        <option value="Niğde">Niğde</option>
+                        <option value="Ordu">Ordu</option>
+                        <option value="Osmaniye">Osmaniye</option>
+                        <option value="Rize">Rize</option>
+                        <option value="Sakarya">Sakarya</option>
+                        <option value="Samsun">Samsun</option>
+                        <option value="Şanlıurfa">Şanlıurfa</option>
+                        <option value="Siirt">Siirt</option>
+                        <option value="Sinop">Sinop</option>
+                        <option value="Şırnak">Şırnak</option>
+                        <option value="Sivas">Sivas</option>
+                        <option value="Tekirdağ">Tekirdağ</option>
+                        <option value="Tokat">Tokat</option>
+                        <option value="Trabzon">Trabzon</option>
+                        <option value="Tunceli">Tunceli</option>
+                        <option value="Uşak">Uşak</option>
+                        <option value="Van">Van</option>
+                        <option value="Yalova">Yalova</option>
+                        <option value="Yozgat">Yozgat</option>
+                        <option value="Zonguldak">Zonguldak</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="historyYearSelect">📅 Yıl Filtresi:</label>
+                    <select id="historyYearSelect" class="city-select" onchange="loadHistoricalFires()">
+                        <option value="all">Tüm Yıllar</option>
+                        <option value="2024">2024</option>
+                        <option value="2023">2023</option>
+                        <option value="2022">2022</option>
+                        <option value="2021">2021</option>
+                        <option value="2020">2020</option>
+                        <option value="2019">2019</option>
+                        <option value="2018">2018</option>
+                        <option value="2017">2017</option>
+                        <option value="2016">2016</option>
+                        <option value="2015">2015</option>
+                        <option value="2014">2014</option>
+                        <option value="2013">2013</option>
+                        <option value="2012">2012</option>
+                        <option value="2011">2011</option>
+                        <option value="2010">2010</option>
+                        <option value="2009">2009</option>
+                        <option value="2008">2008</option>
+                        <option value="2007">2007</option>
+                        <option value="2006">2006</option>
+                        <option value="2005">2005</option>
+                        <option value="2004">2004</option>
+                        <option value="2003">2003</option>
+                        <option value="2002">2002</option>
+                        <option value="2001">2001</option>
+                        <option value="2000">2000</option>
+                        <option value="1999">1999</option>
+                        <option value="1998">1998</option>
+                        <option value="1997">1997</option>
+                        <option value="1996">1996</option>
+                        <option value="1995">1995</option>
+                        <option value="1994">1994</option>
+                        <option value="1993">1993</option>
+                        <option value="1992">1992</option>
+                        <option value="1991">1991</option>
+                        <option value="1990">1990</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="historySortSelect">🔽 Sıralama:</label>
+                    <select id="historySortSelect" class="city-select" onchange="loadHistoricalFires()">
+                        <option value="year-desc">Yıl (Yeniden Eskiye)</option>
+                        <option value="year-asc">Yıl (Eskiden Yeniye)</option>
+                        <option value="area-desc">Alan (Büyükten Küçüğe)</option>
+                        <option value="area-asc">Alan (Küçükten Büyüğe)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="history-stats" id="historyStats">
+                <!-- İstatistikler buraya eklenecek -->
+            </div>
+
+            <div class="history-charts">
+                <div class="chart-container">
+                    <h3>📈 Yıllara Göre Yangın İstatistikleri</h3>
+                    <canvas id="historyYearChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>📅 Aylara Göre Yangın Dağılımı</h3>
+                    <canvas id="historyMonthChart"></canvas>
+                </div>
+            </div>
+
+            <div class="history-map-container">
+                <h3>🗺️ Tarihsel Yangınlar Haritası</h3>
+                <div id="historyMapContainer" style="height: 500px; width: 100%; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);"></div>
+            </div>
+
+            <div class="history-table-container">
+                <h3>📋 Detaylı Yangın Listesi</h3>
+                <div class="table-wrapper">
+                    <table id="historyTable" class="history-table">
+                        <thead>
+                            <tr>
+                                <th>Yıl</th>
+                                <th>Ay</th>
+                                <th>Şehir</th>
+                                <th>Yanan Yer</th>
+                                <th>Alan (km²)</th>
+                                <th>Alan (hektar)</th>
+                                <th>Süre (gün)</th>
+                                <th>Şiddet</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                            <!-- Tablo verileri buraya eklenecek -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Precautions Tab -->
+        <div id="precautions" class="tab-content">
+            <h2>Yangın Önlemleri ve Güvenlik</h2>
+            
+            <div class="precautions-grid">
+                <div class="precaution-card">
+                    <h3>🏠 Evde Alınacak Önlemler</h3>
+                    <ul>
+                        <li>Duman dedektörü taktırın ve düzenli kontrol edin</li>
+                        <li>Yanıcı maddeleri güvenli yerlerde saklayın</li>
+                        <li>Elektrikli cihazları düzgün kullanın</li>
+                        <li>Ocak ve soba kullanımında dikkatli olun</li>
+                        <li>Çocukları ateş ve kibritten uzak tutun</li>
+                    </ul>
+                </div>
+
+                <div class="precaution-card">
+                    <h3>🌲 Orman Yangınları</h3>
+                    <ul>
+                        <li>Ormanlık alanlarda ateş yakmayın</li>
+                        <li>Sigara izmaritlerini yere atmayın</li>
+                        <li>Cam şişeleri ormanda bırakmayın (güneş ışığı yangın çıkarabilir)</li>
+                        <li>Yüksek riskli günlerde ormana girmeyin</li>
+                        <li>Yangın görürseniz hemen 112'yi arayın</li>
+                    </ul>
+                </div>
+
+                <div class="precaution-card">
+                    <h3>🚨 Yangın Anında Yapılacaklar</h3>
+                    <ul>
+                        <li>Sakin olun, panik yapmayın</li>
+                        <li>Hemen 112'yi arayın</li>
+                        <li>Küçük yangınları söndürmeye çalışın</li>
+                        <li>Büyük yangınlarda binayı terk edin</li>
+                        <li>Asansör kullanmayın, merdivenleri kullanın</li>
+                        <li>Kapıları kapatarak yangının yayılmasını önleyin</li>
+                    </ul>
+                </div>
+
+                <div class="precaution-card">
+                    <h3>📞 Acil Durum Numaraları</h3>
+                    <ul>
+                        <li><strong>112:</strong> Acil Yardım (İtfaiye, Ambulans, Polis)</li>
+                        <li><strong>177:</strong> Orman Yangını İhbar Hattı</li>
+                        <li><strong>110:</strong> İtfaiye (Bazı illerde)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="emergency-plan">
+                <h3>📋 Acil Durum Planı</h3>
+                <ol>
+                    <li>Evde bir kaçış planı hazırlayın</li>
+                    <li>Toplanma noktası belirleyin</li>
+                    <li>Yangın söndürücü kullanmayı öğrenin</li>
+                    <li>Düzenli yangın tatbikatı yapın</li>
+                    <li>Acil durum çantası hazırlayın</li>
+                </ol>
+            </div>
+        </div>
+
+        <!-- Education Tab -->
+        <div id="education" class="tab-content">
+            <h2>Yangın Güvenliği Eğitimi</h2>
+            
+            <div class="education-section">
+                <h3>🔥 Yangın Nedir?</h3>
+                <p>Yangın, oksijen, yanıcı madde ve ısının bir araya gelmesiyle oluşan kimyasal bir reaksiyondur. Bu üç unsur "yangın üçgeni" olarak adlandırılır.</p>
+                <div class="fire-triangle">
+                    <div class="triangle-item">🔥 Isı</div>
+                    <div class="triangle-item">💨 Oksijen</div>
+                    <div class="triangle-item">🌲 Yanıcı Madde</div>
+                </div>
+            </div>
+
+            <div class="education-section">
+                <h3>🌡️ Yangın Nasıl Tespit Edilir?</h3>
+                
+                <h4 style="margin-top: 20px; color: #0056b3; font-size: 1.2rem;">Yerel Sensör Sistemleri</h4>
+                <ul>
+                    <li><strong>Sıcaklık Sensörleri:</strong> Ortam sıcaklığını ölçer ve anormal artışları tespit eder</li>
+                    <li><strong>Duman Dedektörleri:</strong> Havadaki duman partiküllerini algılar</li>
+                    <li><strong>Alev Dedektörleri:</strong> Alevin ışığını ve ısısını algılar</li>
+                    <li><strong>Karbon Monoksit Sensörleri:</strong> Zehirli gazları tespit eder</li>
+                </ul>
+
+                <h4 style="margin-top: 30px; color: #0056b3; font-size: 1.2rem;">🛰️ Uydu Tabanlı Yangın Tespiti</h4>
+                <p>Modern yangın tespit sistemleri, uydu görüntülerini kullanarak geniş alanları izler ve yangınları erken tespit eder. NASA FIRMS, MODIS ve VIIRS gibi uydu sistemleri gerçek zamanlı yangın verileri sağlar ve dünya çapında yangın izleme imkanı sunar.</p>
+
+                <h4 style="margin-top: 30px; color: #0056b3; font-size: 1.2rem;">📊 Yangın Veri Setleri ve Kaynakları</h4>
+                <p>Araştırmacılar ve geliştiriciler için çeşitli açık yangın veri setleri mevcuttur. NASA FIRMS, Copernicus, Türkiye Orman Genel Müdürlüğü, Kaggle, IEEE DataPort ve IEEE Xplore gibi kaynaklar yangın tespiti, risk analizi ve makine öğrenmesi çalışmaları için veri sağlamaktadır.</p>
+            </div>
+
+            <div class="education-section">
+                <h3>⚠️ Yangın Türleri</h3>
+                <div class="fire-types">
+                    <div class="fire-type-card">
+                        <h4>A Sınıfı</h4>
+                        <p>Katı maddeler (odun, kağıt, kumaş)</p>
+                    </div>
+                    <div class="fire-type-card">
+                        <h4>B Sınıfı</h4>
+                        <p>Sıvı maddeler (benzin, yağ)</p>
+                    </div>
+                    <div class="fire-type-card">
+                        <h4>C Sınıfı</h4>
+                        <p>Gaz maddeler (doğalgaz, LPG)</p>
+                    </div>
+                    <div class="fire-type-card">
+                        <h4>D Sınıfı</h4>
+                        <p>Metal yangınları</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI Chatbot Tab -->
+        <div id="ai-chatbot" class="tab-content">
+            <h2>🤖 AI Asistan - Yangın Güvenliği ve Risk Analizi Uzmanı</h2>
+            <p class="subtitle">Yangın önlemleri, sensör verileri, risk alanları ve genel sorularınız için AI destekli asistan</p>
+            
+            <div class="ai-chat-container">
+                <div class="ai-chat-messages" id="aiChatMessages">
+                    <div class="ai-message ai-bot-message">
+                        <div class="ai-message-avatar">🤖</div>
+                        <div class="ai-message-content">
+                            <p>Merhaba! Ben yangın güvenliği ve risk analizi uzmanıyım. Size nasıl yardımcı olabilirim?</p>
+                            <p class="ai-suggestions">Örnek sorular:</p>
+                            <ul class="ai-suggestion-list">
+                                <li>"Şu anda yangın riski gördüğün yerler neresi?"</li>
+                                <li>"Mevcut sensör verilerini analiz et"</li>
+                                <li>"Yangın önlemleri nelerdir?"</li>
+                                <li>"Sıcaklık 45°C'ye çıktı, ne yapmalıyım?"</li>
+                                <li>"Yangın anında ne yapmalıyım?"</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="ai-chat-input-container">
+                    <div class="ai-chat-status" id="aiChatStatus"></div>
+                    <div class="ai-chat-input-wrapper">
+                        <input 
+                            type="text" 
+                            id="aiChatInput" 
+                            class="ai-chat-input" 
+                            placeholder="Sorunuzu yazın... (Enter'a basarak gönderin)"
+                            maxlength="500"
+                        />
+                        <button id="aiChatSendBtn" class="ai-chat-send-btn" onclick="sendAIMessage()">
+                            <span>📤</span>
+                        </button>
+                    </div>
+                    <div class="ai-chat-info">
+                        <small>💡 AI Asistan sensör verilerini ve risk alanlarını otomatik olarak analiz eder.</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <footer>
+        <p>TÜBİTAK Projesi - Türkiye Yangın Tespit ve Kontrol Merkezi</p>
+        <p>Bu proje eğitim amaçlıdır. Gerçek yangın durumunda 112'yi arayın.</p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
