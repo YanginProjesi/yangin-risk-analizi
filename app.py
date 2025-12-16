@@ -309,6 +309,7 @@ def send_sms():
 @app.route('/api/health', methods=['GET'])
 def health():
     """Sağlık kontrolü endpoint'i"""
+    global groq_client, groq_model, GROQ_AVAILABLE, GROQ_API_KEY  # Global değişkenleri kullanmak için
     twilio_sid = os.getenv('TWILIO_ACCOUNT_SID', '')
     twilio_token = os.getenv('TWILIO_AUTH_TOKEN', '')
     twilio_from = os.getenv('TWILIO_FROM_NUMBER', '')
@@ -529,7 +530,7 @@ def ai_chat():
         ]
     }
     """
-    global groq_client  # Global değişkeni kullanmak için
+    global groq_client, groq_model, GROQ_AVAILABLE, GROQ_API_KEY  # Global değişkenleri kullanmak için
     try:
         logger.info("AI Chat endpoint'e istek geldi")
         
@@ -611,8 +612,10 @@ Görevlerin:
         ])
         
         # Debug: Groq durumunu kontrol et
+        # Global değişkenleri güvenli bir şekilde kontrol et
+        current_groq_client = groq_client
         logger.info(f"🔍 Groq AI Durum Kontrolü:")
-        logger.info(f"   Groq: {GROQ_AVAILABLE}, Key: {bool(GROQ_API_KEY)}, Client: {groq_client is not None}")
+        logger.info(f"   Groq: {GROQ_AVAILABLE}, Key: {bool(GROQ_API_KEY)}, Client: {current_groq_client is not None}")
         logger.info(f"   Web araması gerekli: {use_web_search}")
         
         # Groq AI'yi dene, yoksa kural tabanlı chatbot kullan
@@ -620,23 +623,25 @@ Görevlerin:
         model_used = 'rule-based'
         
         # Groq AI'yi dene
-        logger.info(f"🔍 Groq kontrolü: AVAILABLE={GROQ_AVAILABLE}, KEY={bool(GROQ_API_KEY)}, CLIENT={groq_client is not None}, MODEL={groq_model}")
+        logger.info(f"🔍 Groq kontrolü: AVAILABLE={GROQ_AVAILABLE}, KEY={bool(GROQ_API_KEY)}, CLIENT={current_groq_client is not None}, MODEL={groq_model}")
         
         # Eğer client yoksa, tekrar oluşturmayı dene
         if GROQ_AVAILABLE and GROQ_API_KEY:
-            if not groq_client:
+            if not current_groq_client:
                 try:
                     logger.info("🔄 Groq client yok, yeniden oluşturuluyor...")
                     groq_client = OpenAI(
                         api_key=GROQ_API_KEY.strip(),
                         base_url="https://api.groq.com/openai/v1",
                     )
+                    current_groq_client = groq_client
                     logger.info("✅ Groq client yeniden oluşturuldu")
                 except Exception as client_error:
                     logger.error(f"❌ Groq client oluşturulamadı: {client_error}")
                     groq_client = None
+                    current_groq_client = None
         
-        if GROQ_AVAILABLE and GROQ_API_KEY and groq_client:
+        if GROQ_AVAILABLE and GROQ_API_KEY and current_groq_client:
             try:
                 logger.info(f"🤖 Groq AI kullanılıyor (model: {groq_model})")
                 
@@ -648,7 +653,7 @@ Görevlerin:
                     enhanced_prompt = full_prompt
                 
                 # OpenAI client kullanarak Groq'a istek gönder
-                response = groq_client.chat.completions.create(
+                response = current_groq_client.chat.completions.create(
                     model=groq_model,
                     messages=[
                         {"role": "system", "content": "Sen bir yangın güvenliği ve risk analizi uzmanısın. Türkçe yanıt ver. Kısa, net ve anlaşılır yanıtlar ver. Emoji kullan (🔥, ⚠️, 🚨, 🌡️ vb.)."},
@@ -673,7 +678,7 @@ Görevlerin:
         # Kural tabanlı chatbot (fallback)
         if not ai_response:
             logger.warning("⚠️ Groq AI kullanılamıyor, kural tabanlı chatbot'a geçiliyor")
-            logger.warning(f"   Groq: AVAILABLE={GROQ_AVAILABLE}, KEY={bool(GROQ_API_KEY)}, CLIENT={groq_client is not None}")
+            logger.warning(f"   Groq: AVAILABLE={GROQ_AVAILABLE}, KEY={bool(GROQ_API_KEY)}, CLIENT={current_groq_client is not None}")
             ai_response = get_rule_based_response(user_message, sensor_data, risk_areas)
             model_used = 'rule-based-chatbot'
         
