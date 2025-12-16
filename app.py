@@ -529,6 +529,7 @@ def ai_chat():
         ]
     }
     """
+    global groq_client  # Global değişkeni kullanmak için
     try:
         logger.info("AI Chat endpoint'e istek geldi")
         
