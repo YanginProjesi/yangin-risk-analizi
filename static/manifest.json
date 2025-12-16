@@ -1,0 +1,43 @@
+{
+  "name": "Yangın Risk Analizi Sistemi",
+  "short_name": "Yangın Risk",
+  "description": "TÜBİTAK Projesi - Türkiye Yangın Tespit ve Kontrol Merkezi",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ff6b6b",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "https://yangin-risk-analizi.onrender.com/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://yangin-risk-analizi.onrender.com/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "utilities", "productivity"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "İzleme Panosu",
+      "short_name": "İzleme Panosu",
+      "description": "Sensör verilerini görüntüle",
+      "url": "/#dashboard",
+      "icons": [{ "src": "https://yangin-risk-analizi.onrender.com/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Harita",
+      "short_name": "Harita",
+      "description": "Yangın risk haritası",
+      "url": "/#map",
+      "icons": [{ "src": "https://yangin-risk-analizi.onrender.com/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
+
