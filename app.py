@@ -1,991 +1,1355 @@
 """
-Yangın Risk Analizi Web Uygulaması
-Flask backend + Frontend
+Ana Streamlit uygulaması
+Yangın Risk Analizi ve Yönetim Sistemi
 """
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-import os
-import logging
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import time
 
-# Logging ayarları (önce logger'ı tanımla)
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from data_loader import DataLoader
+from risk_analyzer import RiskAnalyzer
+from spread_predictor import SpreadPredictor
+from resource_calculator import ResourceCalculator
+from alert_system import AlertSystem
+from weather_api import WeatherAPI
+from sms_notifier import SMSNotifier, create_sms_notifier
 
-# .env dosyasını yükle (local test için)
-try:
-    from dotenv import load_dotenv
-    # .env dosyasını açıkça belirt
-    import os
-    env_path = os.path.join(os.path.dirname(__file__), '.env')
-    load_dotenv(dotenv_path=env_path)
-    logger.info(f"✅ .env dosyası yüklendi: {env_path}")
-    # Kontrol et
-    groq_key = os.getenv('GROQ_API_KEY', '').strip()
-    logger.info(f"   GROQ_API_KEY: {'✅' if groq_key else '❌'} ({len(groq_key)} karakter)")
-except ImportError:
-    # python-dotenv yüklü değilse devam et (production'da environment variable kullanılacak)
-    logger.warning("⚠️ python-dotenv yüklü değil, .env dosyası yüklenemedi")
-except Exception as e:
-    logger.warning(f"⚠️ .env dosyası yüklenirken hata: {e}")
+# Sayfa yapılandırması
+st.set_page_config(
+    page_title="Yangın Risk Analizi Sistemi",
+    page_icon="🔥",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-from sms_notifier import create_sms_notifier
+# Başlık
+st.title("🔥 Yangın Risk Analizi ve Yönetim Sistemi")
+st.markdown("### TÜBİTAK 2204-B Projesi - Ortaokul Öğrencileri İçin")
 
-# Yangın Risk Tahmin Modeli
-try:
-    from fire_risk_model import fire_risk_predictor
-    # Modeli yükle veya eğit
-    if not fire_risk_predictor.load_model():
-        logger.info("Model dosyası bulunamadı, yeni model eğitiliyor...")
-        fire_risk_predictor.train()
-    RISK_MODEL_AVAILABLE = True
-    logger.info("✅ Yangın Risk Tahmin Modeli hazır")
-except ImportError as e:
-    logger.warning(f"⚠️ fire_risk_model modülü yüklenemedi: {e}")
-    logger.warning("   Risk tahmin özelliği devre dışı. Yüklemek için: pip install scikit-learn pandas numpy joblib")
-    RISK_MODEL_AVAILABLE = False
-    fire_risk_predictor = None
-except Exception as e:
-    logger.error(f"❌ Risk model yükleme hatası: {e}", exc_info=True)
-    RISK_MODEL_AVAILABLE = False
-    fire_risk_predictor = None
+# Sidebar
+st.sidebar.title("📊 Kontrol Paneli")
+st.sidebar.markdown("---")
 
-# Groq AI için (OpenAI client kullanarak)
-GROQ_AVAILABLE = False
-try:
-    from openai import OpenAI
-    GROQ_AVAILABLE = True
-    logger.info("✅ OpenAI paketi yüklü (Groq için kullanılacak)")
-except ImportError:
-    logger.warning("⚠️ openai paketi yüklü değil. Groq AI devre dışı. Yüklemek için: pip install openai")
+# SMS Bildirim Ayarları
+st.sidebar.subheader("📱 SMS Bildirimleri")
+sms_enabled = st.sidebar.checkbox("SMS Bildirimlerini Aktif Et", value=True, 
+                                   help="Kritik yangın riski durumunda SMS gönderilir")
+phone_number = st.sidebar.text_input("Telefon Numarası", value="+905326982193",
+                                     help="E.164 formatında (örn: +905326982193)")
+st.sidebar.markdown("---")
 
-app = Flask(__name__, static_folder='static', static_url_path='')
-CORS(app)  # Tüm origin'lerden isteklere izin ver
+# Şehir seçimi
+st.sidebar.subheader("📍 Konum Seçimi")
+# Türkiye'nin 81 ili ve koordinatları
+cities = {
+    "Türkiye Genel": {"lat": 39.0, "lon": 35.0, "zoom": 6},
+    "Adana": {"lat": 37.0000, "lon": 35.3213, "zoom": 9},
+    "Adıyaman": {"lat": 37.7636, "lon": 38.2786, "zoom": 9},
+    "Afyonkarahisar": {"lat": 38.7567, "lon": 30.5387, "zoom": 9},
+    "Ağrı": {"lat": 39.7217, "lon": 43.0567, "zoom": 9},
+    "Aksaray": {"lat": 38.3686, "lon": 34.0294, "zoom": 9},
+    "Amasya": {"lat": 40.6533, "lon": 35.8331, "zoom": 9},
+    "Ankara": {"lat": 39.9334, "lon": 32.8597, "zoom": 9},
+    "Antalya": {"lat": 36.8969, "lon": 30.7133, "zoom": 9},
+    "Ardahan": {"lat": 41.1106, "lon": 42.7022, "zoom": 9},
+    "Artvin": {"lat": 41.1828, "lon": 41.8183, "zoom": 9},
+    "Aydın": {"lat": 37.8444, "lon": 27.8458, "zoom": 9},
+    "Balıkesir": {"lat": 39.6484, "lon": 27.8826, "zoom": 9},
+    "Bartın": {"lat": 41.6344, "lon": 32.3375, "zoom": 9},
+    "Batman": {"lat": 37.8814, "lon": 41.1353, "zoom": 9},
+    "Bayburt": {"lat": 40.2553, "lon": 40.2247, "zoom": 9},
+    "Bilecik": {"lat": 40.1425, "lon": 29.9792, "zoom": 9},
+    "Bingöl": {"lat": 38.8847, "lon": 40.4981, "zoom": 9},
+    "Bitlis": {"lat": 38.4000, "lon": 42.1083, "zoom": 9},
+    "Bolu": {"lat": 40.7356, "lon": 31.6061, "zoom": 9},
+    "Burdur": {"lat": 37.7203, "lon": 30.2908, "zoom": 9},
+    "Bursa": {"lat": 40.1826, "lon": 29.0665, "zoom": 9},
+    "Çanakkale": {"lat": 40.1553, "lon": 26.4142, "zoom": 9},
+    "Çankırı": {"lat": 40.6000, "lon": 33.6167, "zoom": 9},
+    "Çorum": {"lat": 40.5500, "lon": 34.9500, "zoom": 9},
+    "Denizli": {"lat": 37.7765, "lon": 29.0864, "zoom": 9},
+    "Diyarbakır": {"lat": 37.9100, "lon": 40.2300, "zoom": 9},
+    "Düzce": {"lat": 40.8439, "lon": 31.1564, "zoom": 9},
+    "Edirne": {"lat": 41.6772, "lon": 26.5556, "zoom": 9},
+    "Elazığ": {"lat": 38.6753, "lon": 39.2228, "zoom": 9},
+    "Erzincan": {"lat": 39.7500, "lon": 39.5000, "zoom": 9},
+    "Erzurum": {"lat": 39.9043, "lon": 41.2679, "zoom": 9},
+    "Eskişehir": {"lat": 39.7767, "lon": 30.5206, "zoom": 9},
+    "Gaziantep": {"lat": 37.0662, "lon": 37.3833, "zoom": 9},
+    "Giresun": {"lat": 40.9128, "lon": 38.3894, "zoom": 9},
+    "Gümüşhane": {"lat": 40.4603, "lon": 39.5081, "zoom": 9},
+    "Hakkari": {"lat": 37.5744, "lon": 43.7408, "zoom": 9},
+    "Hatay": {"lat": 36.4018, "lon": 36.3498, "zoom": 9},
+    "Iğdır": {"lat": 39.9167, "lon": 44.0333, "zoom": 9},
+    "Isparta": {"lat": 37.7647, "lon": 30.5567, "zoom": 9},
+    "İstanbul": {"lat": 41.0082, "lon": 28.9784, "zoom": 9},
+    "İzmir": {"lat": 38.4237, "lon": 27.1428, "zoom": 9},
+    "Kahramanmaraş": {"lat": 37.5858, "lon": 36.9371, "zoom": 9},
+    "Karabük": {"lat": 41.2061, "lon": 32.6278, "zoom": 9},
+    "Karaman": {"lat": 37.1811, "lon": 33.2150, "zoom": 9},
+    "Kars": {"lat": 40.6083, "lon": 43.0972, "zoom": 9},
+    "Kastamonu": {"lat": 41.3767, "lon": 33.7764, "zoom": 9},
+    "Kayseri": {"lat": 38.7312, "lon": 35.4787, "zoom": 9},
+    "Kilis": {"lat": 36.7167, "lon": 37.1167, "zoom": 9},
+    "Kırıkkale": {"lat": 39.8467, "lon": 33.5153, "zoom": 9},
+    "Kırklareli": {"lat": 41.7333, "lon": 27.2167, "zoom": 9},
+    "Kırşehir": {"lat": 39.1458, "lon": 34.1639, "zoom": 9},
+    "Kocaeli": {"lat": 40.8533, "lon": 29.8815, "zoom": 9},
+    "Konya": {"lat": 37.8746, "lon": 32.4932, "zoom": 9},
+    "Kütahya": {"lat": 39.4167, "lon": 29.9833, "zoom": 9},
+    "Malatya": {"lat": 38.3552, "lon": 38.3095, "zoom": 9},
+    "Manisa": {"lat": 38.6140, "lon": 27.4296, "zoom": 9},
+    "Mardin": {"lat": 37.3122, "lon": 40.7350, "zoom": 9},
+    "Mersin": {"lat": 36.8000, "lon": 34.6333, "zoom": 9},
+    "Muğla": {"lat": 37.2153, "lon": 28.3636, "zoom": 9},
+    "Muş": {"lat": 38.7333, "lon": 41.4833, "zoom": 9},
+    "Nevşehir": {"lat": 38.6244, "lon": 34.7239, "zoom": 9},
+    "Niğde": {"lat": 37.9667, "lon": 34.6833, "zoom": 9},
+    "Ordu": {"lat": 40.9839, "lon": 37.8764, "zoom": 9},
+    "Osmaniye": {"lat": 37.0742, "lon": 36.2478, "zoom": 9},
+    "Rize": {"lat": 41.0208, "lon": 40.5219, "zoom": 9},
+    "Sakarya": {"lat": 40.7569, "lon": 30.3781, "zoom": 9},
+    "Samsun": {"lat": 41.2867, "lon": 36.3300, "zoom": 9},
+    "Şanlıurfa": {"lat": 37.1674, "lon": 38.7955, "zoom": 9},
+    "Siirt": {"lat": 37.9333, "lon": 41.9500, "zoom": 9},
+    "Sinop": {"lat": 42.0269, "lon": 35.1506, "zoom": 9},
+    "Şırnak": {"lat": 37.5167, "lon": 42.4500, "zoom": 9},
+    "Sivas": {"lat": 39.7477, "lon": 37.0179, "zoom": 9},
+    "Tekirdağ": {"lat": 40.9833, "lon": 27.5167, "zoom": 9},
+    "Tokat": {"lat": 40.3139, "lon": 36.5542, "zoom": 9},
+    "Trabzon": {"lat": 41.0015, "lon": 39.7178, "zoom": 9},
+    "Tunceli": {"lat": 39.1083, "lon": 39.5472, "zoom": 9},
+    "Uşak": {"lat": 38.6803, "lon": 29.4081, "zoom": 9},
+    "Van": {"lat": 38.4891, "lon": 43.4089, "zoom": 9},
+    "Yalova": {"lat": 40.6550, "lon": 29.2769, "zoom": 9},
+    "Yozgat": {"lat": 39.8208, "lon": 34.8083, "zoom": 9},
+    "Zonguldak": {"lat": 41.4564, "lon": 31.7986, "zoom": 9}
+}
 
-# SMS Notifier oluştur
-sms_notifier = create_sms_notifier(phone_number="+905326982193")
+# Şehir seçici
+selected_city = st.sidebar.selectbox(
+    "Şehir Seçin:",
+    options=list(cities.keys()),
+    index=0,
+    help="Haritanın merkezini seçtiğiniz şehre göre ayarlar"
+)
 
-# Groq AI yapılandırması (OpenAI client kullanarak)
-GROQ_API_KEY = os.getenv('GROQ_API_KEY', '').strip()
+# Seçilen şehrin koordinatlarını al
+selected_location = cities[selected_city]
 
-# Debug: API key kontrolü
-logger.info(f"🔍 Groq API Key Kontrolü:")
-logger.info(f"   GROQ_API_KEY var: {bool(GROQ_API_KEY)}")
-if GROQ_API_KEY:
-    logger.info(f"   GROQ_API_KEY uzunluk: {len(GROQ_API_KEY)}")
-    logger.info(f"   GROQ_API_KEY başlangıcı: {GROQ_API_KEY[:20]}...")
+# Gerçek zamanlı hava durumu
+st.sidebar.markdown("---")
+st.sidebar.subheader("🌤️ Hava Durumu")
+weather_api = WeatherAPI()
+weather_data = weather_api.get_weather(
+    selected_location["lat"], 
+    selected_location["lon"],
+    selected_city
+)
+
+if weather_data and weather_data.get('temperature') is not None:
+    st.sidebar.metric("🌡️ Sıcaklık", f"{weather_data['temperature']:.1f}°C")
+    if weather_data.get('humidity'):
+        st.sidebar.metric("💧 Nem", f"%{weather_data['humidity']:.0f}")
+    if weather_data.get('wind_speed'):
+        st.sidebar.metric("💨 Rüzgar", f"{weather_data['wind_speed']:.1f} km/h")
+    if weather_data.get('description'):
+        st.sidebar.info(f"☁️ {weather_data['description']}")
 else:
-    logger.warning(f"   ⚠️ GROQ_API_KEY bulunamadı! .env dosyasını kontrol edin.")
+    st.sidebar.warning("⚠️ Hava durumu verisi yüklenemedi")
 
-# Groq AI client (OpenAI client kullanarak)
-groq_client = None
-groq_model = "llama-3.1-70b-versatile"  # veya "mixtral-8x7b-32768"
+st.sidebar.markdown("---")
 
-if GROQ_AVAILABLE and GROQ_API_KEY:
-    try:
-        logger.info(f"🔧 Groq AI yapılandırılıyor (OpenAI client ile)...")
-        logger.info(f"   API Key uzunluğu: {len(GROQ_API_KEY)}")
-        logger.info(f"   API Key başlangıcı: {GROQ_API_KEY[:20]}...")
-        
-        # OpenAI client kullanarak Groq'a bağlan
-        groq_client = OpenAI(
-            api_key=GROQ_API_KEY.strip(),  # Boşlukları temizle
-            base_url="https://api.groq.com/openai/v1",
+# Gerçek zamanlı güncelleme
+st.sidebar.subheader("🔄 Gerçek Zamanlı Güncelleme")
+auto_refresh = st.sidebar.checkbox("Otomatik Yenileme", value=True, help="Veriler otomatik olarak güncellenir")
+refresh_interval = st.sidebar.slider("Yenileme Aralığı (saniye)", 10, 300, 60, help="Daha sık güncelleme için değeri azaltın")
+
+# Manuel yenileme butonu
+if st.sidebar.button("🔄 Şimdi Yenile", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📡 Veri Durumu")
+st.sidebar.info(f"Son güncelleme: {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.info(f"📍 Seçili Konum: {selected_city}")
+
+# Veri yükleme - Gerçek zamanlı için cache süresini kısalt
+@st.cache_data(ttl=60)  # 1 dakika cache (gerçek zamanlı)
+def load_all_data():
+    loader = DataLoader()
+    return loader.get_all_data()
+
+# Ana içerik
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🗺️ Risk Haritası", "📈 Yayılma Tahmini", "🚒 Kaynak İhtiyacı", "⚠️ Uyarı Sistemi", "🎮 Yangın Simülasyonu", "📊 Yangın Tarihçesi"])
+
+# Verileri yükle
+with st.spinner("Veriler yükleniyor..."):
+    all_data = load_all_data()
+
+# Risk analizi - Tüm veri kaynaklarını dahil et (tarihsel veriler dahil)
+analyzer = RiskAnalyzer()
+risk_results = analyzer.analyze_risk(
+    all_data['firms'], 
+    all_data['prediction'],
+    kaggle_data=all_data.get('kaggle'),
+    ieee_data=all_data.get('ieee'),
+    historical_data=all_data.get('historical')
+)
+
+# TAB 1: Risk Haritası - 3D Görselleştirme
+with tab1:
+    st.header(f"🗺️ 3D Yangın Risk Haritası - {selected_city}")
+    st.markdown(f"**{selected_city} bölgesi - Gerçek zamanlı 3 boyutlu harita ile yüksek riskli bölgeler net bir şekilde gösterilmektedir.**")
+    
+    # Kontroller
+    col_controls = st.columns([2, 1, 1, 1])
+    with col_controls[0]:
+        map_style = st.selectbox(
+            "🗺️ Harita Stili:",
+            ["Uydu Görüntüsü", "Açık Harita", "Koyu Harita", "Topografik"],
+            index=0,
+            help="NASA FIRMS benzeri uydu görüntüleri"
         )
-        
-        # Test çağrısı yap
-        test_response = groq_client.chat.completions.create(
-            model=groq_model,
-            messages=[{"role": "user", "content": "Test"}],
-            max_tokens=10
-        )
-        logger.info(f"✅ Groq AI yapılandırıldı (model: {groq_model})")
-        logger.info(f"   🚀 Groq AI kullanılacak (ücretsiz ve hızlı)")
-        logger.info(f"   Test yanıtı: {test_response.choices[0].message.content[:30]}...")
-    except Exception as e:
-        logger.error(f"❌ Groq AI yapılandırma hatası: {e}")
-        logger.error(f"   Hata tipi: {type(e).__name__}")
-        logger.error(f"   Detaylı hata:", exc_info=True)
-        groq_client = None
-else:
-    if not GROQ_AVAILABLE:
-        logger.warning("⚠️ OpenAI paketi yüklü değil: pip install openai")
-    if not GROQ_API_KEY:
-        logger.warning("⚠️ GROQ_API_KEY environment variable ayarlanmamış")
-
-
-@app.route('/')
-def index():
-    """Ana sayfa"""
-    return send_from_directory('static', 'index.html')
-
-
-@app.route('/manifest.json')
-def manifest():
-    """PWA Manifest dosyası"""
-    return send_from_directory('static', 'manifest.json', mimetype='application/manifest+json')
-
-
-@app.route('/service-worker.js')
-def service_worker():
-    """Service Worker dosyası"""
-    return send_from_directory('static', 'service-worker.js', mimetype='application/javascript')
-
-
-@app.route('/icon-192.png')
-def icon_192():
-    """192x192 icon"""
-    try:
-        return send_from_directory('static', 'icon-192.png', mimetype='image/png')
-    except FileNotFoundError:
-        logger.error("icon-192.png dosyası bulunamadı!")
-        return "Icon file not found", 404
-
-
-@app.route('/icon-512.png')
-def icon_512():
-    """512x512 icon"""
-    try:
-        return send_from_directory('static', 'icon-512.png', mimetype='image/png')
-    except FileNotFoundError:
-        logger.error("icon-512.png dosyası bulunamadı!")
-        return "Icon file not found", 404
-
-
-@app.route('/api/send-sms', methods=['POST'])
-def send_sms():
-    """
-    SMS gönderme endpoint'i
+    with col_controls[1]:
+        view_3d = st.checkbox("3D Görünüm", value=True, help="3 boyutlu görünümü aç/kapat")
+    with col_controls[2]:
+        height_scale = st.slider("Yükseklik Ölçeği", 0.1, 5.0, 1.0, 0.1, help="Risk yüksekliği çarpanı")
+    with col_controls[3]:
+        point_size = st.slider("Nokta Boyutu", 3, 20, 8, help="İşaretleyici boyutu")
     
-    Request body:
-    {
-        "phone_number": "+905326982193",
-        "risk_level": "Kritik",
-        "location": "Antalya - Manavgat",
-        "risk_score": 85.5,
-        "latitude": 36.8969,
-        "longitude": 30.7133,
-        "message": "Yangın simülasyonu başlatıldı"
-    }
-    """
-    try:
-        # JSON verisini al
-        if not request.is_json:
-            logger.error("Request JSON formatında değil")
-            return jsonify({
-                'success': False,
-                'message': 'Request JSON formatında olmalı'
-            }), 400
-        
-        data = request.get_json()
-        if not data:
-            logger.error("Request body boş")
-            return jsonify({
-                'success': False,
-                'message': 'Request body boş'
-            }), 400
-        
-        # Telefon numarası
-        phone_number = data.get('phone_number', '+905326982193')
-        
-        # SMS Notifier'ı güncelle
-        try:
-            global sms_notifier
-            sms_notifier = create_sms_notifier(phone_number=phone_number)
-        except Exception as e:
-            logger.error(f"SMS Notifier oluşturma hatası: {e}", exc_info=True)
-            return jsonify({
-                'success': False,
-                'message': f'SMS Notifier oluşturulamadı: {str(e)}',
-                'error_type': type(e).__name__
-            }), 500
-        
-        # Risk seviyesi ve konum bilgileri
-        risk_level = data.get('risk_level', 'Yüksek')
-        location = data.get('location', 'Bilinmeyen Konum')
-        risk_score = data.get('risk_score', 75.0)
-        latitude = data.get('latitude')
-        longitude = data.get('longitude')
-        custom_message = data.get('message', '')
-        
-        # Özel mesaj varsa onu kullan, yoksa standart format
-        if custom_message:
-            # Özel mesaj için basit SMS gönderimi
-            from datetime import datetime
-            # Emoji karakterlerini kaldır (encoding sorunlarını önlemek için)
-            clean_message = custom_message.replace('🔥', '[YANGIN]').replace('⚠️', '[UYARI]')
-            message = f"YANGIN SIMULASYONU\n\n{clean_message}\n\nKonum: {location}"
-            if latitude and longitude:
-                message += f"\nKoordinatlar: {latitude:.4f}°, {longitude:.4f}°"
-            message += f"\n\nTarih: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-            message += "\n\nYangin Risk Analizi Sistemi"
-            
-            logger.info(f"SMS gönderiliyor: {phone_number}")
-            logger.info(f"Twilio Client: {'Mevcut' if sms_notifier.twilio_client else 'Yok'}")
-            logger.info(f"From Number: {sms_notifier.twilio_from_number}")
-            
-            # Twilio ile gönder
-            if sms_notifier.twilio_client and sms_notifier.twilio_from_number:
-                try:
-                    logger.info("Twilio ile SMS gönderiliyor...")
-                    result = sms_notifier.send_sms_twilio(message)
-                    if result:
-                        logger.info("SMS başarıyla gönderildi!")
-                        return jsonify({
-                            'success': True,
-                            'message': 'SMS başarıyla gönderildi',
-                            'phone': phone_number
-                        }), 200
-                    else:
-                        logger.error("SMS gönderilemedi (send_sms_twilio False döndü)")
-                        return jsonify({
-                            'success': False,
-                            'message': 'SMS gönderilemedi. Twilio hatası.'
-                        }), 500
-                except Exception as e:
-                    logger.error(f"SMS gönderme hatası: {e}", exc_info=True)
-                    return jsonify({
-                        'success': False,
-                        'message': f'SMS gönderilemedi: {str(e)}'
-                    }), 500
-            else:
-                logger.warning(f"Twilio yapılandırılmamış - SMS simülasyonu")
-                logger.warning(f"Alıcı: {phone_number}")
-                logger.warning(f"Mesaj: {message}")
-                return jsonify({
-                    'success': True,
-                    'message': 'SMS simülasyonu (Twilio yapılandırılmamış)',
-                    'simulated': True
-                }), 200
-        else:
-            # Standart yangın riski SMS'i
-            try:
-                success = sms_notifier.send_fire_alert_sms(
-                    risk_level=risk_level,
-                    location=location,
-                    risk_score=risk_score,
-                    latitude=latitude,
-                    longitude=longitude
-                )
-                
-                if success:
-                    return jsonify({
-                        'success': True,
-                        'message': 'SMS başarıyla gönderildi'
-                    }), 200
-                else:
-                    return jsonify({
-                        'success': False,
-                        'message': 'SMS gönderilemedi. Twilio yapılandırmasını kontrol edin.'
-                    }), 500
-            except Exception as e:
-                logger.error(f"send_fire_alert_sms hatası: {e}", exc_info=True)
-                return jsonify({
-                    'success': False,
-                    'message': f'SMS gönderilemedi: {str(e)}',
-                    'error_type': type(e).__name__
-                }), 500
-                
-    except Exception as e:
-        logger.error(f"API hatası: {e}", exc_info=True)
-        import traceback
-        error_details = traceback.format_exc()
-        logger.error(f"Hata detayları: {error_details}")
-        return jsonify({
-            'success': False,
-            'message': f'Hata: {str(e)}',
-            'error_type': type(e).__name__
-        }), 500
-
-
-@app.route('/api/health', methods=['GET'])
-def health():
-    """Sağlık kontrolü endpoint'i"""
-    twilio_sid = os.getenv('TWILIO_ACCOUNT_SID', '')
-    twilio_token = os.getenv('TWILIO_AUTH_TOKEN', '')
-    twilio_from = os.getenv('TWILIO_FROM_NUMBER', '')
+    st.markdown("---")
     
-    return jsonify({
-        'status': 'ok',
-        'service': 'SMS API',
-        'twilio_configured': sms_notifier.twilio_client is not None,
-        'twilio_account_sid_set': bool(twilio_sid),
-        'twilio_auth_token_set': bool(twilio_token),
-        'twilio_from_number_set': bool(twilio_from),
-        'twilio_account_sid_preview': twilio_sid[:10] + '...' if twilio_sid else None,
-        'twilio_from_number': twilio_from if twilio_from else None,
-        'phone_number': sms_notifier.phone_number
-    }), 200
-
-
-@app.route('/api/test-sms', methods=['POST'])
-def test_sms():
-    """Test SMS gönderme endpoint'i"""
-    try:
-        phone_number = request.json.get('phone_number', '+905326982193')
-        test_message = request.json.get('message', 'Test mesajı - Yangın Risk Analizi Sistemi')
-        
-        global sms_notifier
-        sms_notifier = create_sms_notifier(phone_number=phone_number)
-        
-        from datetime import datetime
-        message = f"🧪 TEST SMS\n\n{test_message}\n\nTarih: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        
-        if sms_notifier.twilio_client and sms_notifier.twilio_from_number:
-            success = sms_notifier.send_sms_twilio(message)
-            if success:
-                return jsonify({
-                    'success': True,
-                    'message': 'Test SMS başarıyla gönderildi',
-                    'phone': phone_number
-                }), 200
-            else:
-                return jsonify({
-                    'success': False,
-                    'message': 'Test SMS gönderilemedi'
-                }), 500
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'Twilio yapılandırılmamış',
-                'twilio_client': sms_notifier.twilio_client is not None,
-                'twilio_from_number': sms_notifier.twilio_from_number
-            }), 400
-    except Exception as e:
-        logger.error(f"Test SMS hatası: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'message': f'Hata: {str(e)}'
-        }), 500
-
-
-@app.route('/api/sensor-data', methods=['GET'])
-def get_sensor_data():
-    """Mevcut sensör verilerini döndür"""
-    try:
-        # Frontend'den gelen verileri al (eğer gönderilirse)
-        # Şimdilik örnek veri döndürüyoruz, gerçek uygulamada veritabanından alınabilir
-        return jsonify({
-            'success': True,
-            'data': {
-                'message': 'Sensör verileri frontend\'den alınmalı. Bu endpoint mevcut sensör verilerini döndürür.'
-            }
-        }), 200
-    except Exception as e:
-        logger.error(f"Sensor data hatası: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'message': f'Hata: {str(e)}'
-        }), 500
-
-
-@app.route('/api/predict-risk', methods=['POST'])
-def predict_risk():
-    """
-    Yangın riski tahmin endpoint'i
+    # Harita oluştur - Plotly 3D
+    col1, col2 = st.columns([2.5, 1])
     
-    Request body:
-    {
-        "temperature": 35.5,          # Sıcaklık (°C)
-        "humidity": 30,               # Nem (%)
-        "wind_speed": 15,             # Rüzgar hızı (km/h)
-        "wind_direction": 180,        # Rüzgar yönü (derece)
-        "precipitation": 0,           # Yağış (mm)
-        "month": 7,                   # Ay (1-12)
-        "day_of_year": 200,           # Yılın günü (1-365)
-        "historical_fires_nearby": 2, # Yakındaki geçmiş yangın sayısı
-        "vegetation_index": 0.7,      # Bitki örtüsü indeksi (0-1)
-        "elevation": 500              # Yükseklik (m)
-    }
-    
-    Response:
-    {
-        "success": true,
-        "risk_score": 65.5,
-        "risk_level": "Yüksek",
-        "confidence": 0.85
-    }
-    """
-    try:
-        if not RISK_MODEL_AVAILABLE or fire_risk_predictor is None:
-            return jsonify({
-                'success': False,
-                'message': 'Risk tahmin modeli kullanılamıyor'
-            }), 503
-        
-        if not request.is_json:
-            return jsonify({
-                'success': False,
-                'message': 'Request JSON formatında olmalı'
-            }), 400
-        
-        data = request.get_json()
-        
-        # Varsayılan değerler
-        features = {
-            'temperature': data.get('temperature', 25),
-            'humidity': data.get('humidity', 50),
-            'wind_speed': data.get('wind_speed', 10),
-            'wind_direction': data.get('wind_direction', 180),
-            'precipitation': data.get('precipitation', 0),
-            'month': data.get('month', 7),
-            'day_of_year': data.get('day_of_year', 200),
-            'historical_fires_nearby': data.get('historical_fires_nearby', 0),
-            'vegetation_index': data.get('vegetation_index', 0.5),
-            'elevation': data.get('elevation', 500)
+    with col1:
+        # Risk seviyelerine göre renkler
+        color_map = {
+            'Düşük': '#4CAF50',
+            'Orta': '#FFC107',
+            'Yüksek': '#FF9800',
+            'Kritik': '#F44336'
         }
         
-        logger.info(f"Risk tahmini isteği: {features}")
+        # Mapbox tile seçimi
+        # Uydu görüntüleri için Esri World Imagery kullanılacak (custom layer)
+        use_custom_tiles = map_style == "Uydu Görüntüsü"
         
-        # Tahmin yap
-        prediction = fire_risk_predictor.predict(features)
+        mapbox_styles = {
+            "Açık Harita": "open-street-map",
+            "Koyu Harita": "carto-darkmatter",
+            "Topografik": "stamen-terrain"
+        }
         
-        logger.info(f"Risk tahmini sonucu: {prediction}")
+        if map_style in mapbox_styles:
+            mapbox_style = mapbox_styles[map_style]
+        else:
+            mapbox_style = "open-street-map"  # Varsayılan
         
-        return jsonify({
-            'success': True,
-            'risk_score': prediction['risk_score'],
-            'risk_level': prediction['risk_level'],
-            'confidence': prediction['confidence']
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Risk tahmin hatası: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'message': f'Hata: {str(e)}'
-        }), 500
-
-
-@app.route('/api/train-risk-model', methods=['POST'])
-def train_risk_model():
-    """
-    Risk tahmin modelini yeniden eğit
-    
-    Response:
-    {
-        "success": true,
-        "train_score": 0.95,
-        "test_score": 0.92,
-        "feature_importance": {...}
-    }
-    """
-    try:
-        if not RISK_MODEL_AVAILABLE or fire_risk_predictor is None:
-            return jsonify({
-                'success': False,
-                'message': 'Risk tahmin modeli kullanılamıyor'
-            }), 503
-        
-        logger.info("Model eğitimi başlatılıyor...")
-        results = fire_risk_predictor.train()
-        
-        return jsonify({
-            'success': True,
-            'train_score': results['train_score'],
-            'test_score': results['test_score'],
-            'feature_importance': results['feature_importance']
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Model eğitimi hatası: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'message': f'Hata: {str(e)}'
-        }), 500
-
-
-@app.route('/api/ai-chat', methods=['POST'])
-def ai_chat():
-    """
-    AI Chatbot endpoint'i - Sensör verilerini ve yangın riski verilerini analiz edebilir
-    
-    Request body:
-    {
-        "message": "Kullanıcı mesajı",
-        "sensor_data": {  # Opsiyonel: mevcut sensör verileri
-            "temperature": 35.5,
-            "smoke": 120,
-            "fire_risk": 65,
-            "location": "İstanbul"
-        },
-        "risk_areas": [  # Opsiyonel: risk alanları
-            {"name": "Antalya", "risk_score": 85, "lat": 36.8969, "lon": 30.7133},
-            {"name": "Muğla", "risk_score": 75, "lat": 37.2153, "lon": 28.3636}
-        ]
-    }
-    """
-    try:
-        logger.info("AI Chat endpoint'e istek geldi")
-        
-        if not request.is_json:
-            return jsonify({
-                'success': False,
-                'message': 'Request JSON formatında olmalı'
-            }), 400
-        
-        data = request.get_json()
-        user_message = data.get('message', '').strip()
-        sensor_data = data.get('sensor_data', {})
-        risk_areas = data.get('risk_areas', [])
-        
-        logger.info(f"AI Chat: Kullanıcı mesajı: {user_message[:50]}...")
-        logger.info(f"AI Chat: Risk alanları sayısı: {len(risk_areas) if risk_areas else 0}")
-        logger.info(f"AI Chat: Sensör verileri: {sensor_data}")
-        
-        if not user_message:
-            return jsonify({
-                'success': False,
-                'message': 'Mesaj boş olamaz'
-            }), 400
-        
-        # Context oluştur (sensör verileri ve risk alanları)
-        context = ""
-        
-        if sensor_data:
-            context += f"\n\nMevcut Sensör Verileri:\n"
-            if 'temperature' in sensor_data:
-                context += f"- Sıcaklık: {sensor_data['temperature']}°C\n"
-            if 'smoke' in sensor_data:
-                context += f"- Duman: {sensor_data['smoke']} PPM\n"
-            if 'fire_risk' in sensor_data:
-                context += f"- Yangın Riski: {sensor_data['fire_risk']}/100\n"
-            if 'location' in sensor_data:
-                context += f"- Konum: {sensor_data['location']}\n"
-        
-        if risk_areas and len(risk_areas) > 0:
-            # Risk alanlarını skora göre sırala (yüksekten düşüğe)
-            sorted_areas = sorted(risk_areas, key=lambda x: x.get('risk_score', 0), reverse=True)
-            context += f"\n\nYangın Risk Alanları (En Riskli → En Az Riskli):\n"
-            for i, area in enumerate(sorted_areas[:10], 1):  # İlk 10 alan
-                name = area.get('name', 'Bilinmeyen')
-                score = area.get('risk_score', 0)
-                lat = area.get('lat', 0)
-                lon = area.get('lon', 0)
-                context += f"{i}. {name}: Risk Skoru {score}/100 (Koordinat: {lat:.4f}°, {lon:.4f}°)\n"
-        
-        # Sistem prompt'u
-        system_prompt = """Sen bir yangın güvenliği ve risk analizi uzmanısın. Türkçe yanıt ver.
-
-Görevlerin:
-1. Kullanıcılara yangın önlemleri, yangın türleri, acil durum prosedürleri hakkında bilgi ver
-2. Mevcut sensör verilerini analiz et ve yorumla
-3. Yangın risk alanlarını analiz et ve en riskliden en aza doğru sırala
-4. Genel sorulara da cevap ver (web, teknoloji, güncel konular vb.)
-5. Yangın ile ilgili güncel bilgiler için web'den araştırma yap ve güncel verileri kullan
-
-Önemli:
-- Kısa, net ve anlaşılır yanıtlar ver
-- Sensör verileri varsa, bunları analiz et ve öneriler sun
-- Risk alanları sorulduğunda, en riskliden en aza doğru sıralama yap
-- Acil durumlarda net talimatlar ver
-- Yangın ile ilgili sorularda güncel web verilerini kullan
-- Emoji kullan (🔥, ⚠️, 🚨, 🌡️ vb.)
-- Web'den aldığın bilgileri kaynak göster"""
-        
-        # Full prompt oluştur
-        full_prompt = system_prompt + context + "\n\nKullanıcı: " + user_message
-        
-        # Web araması gerekip gerekmediğini kontrol et
-        message_lower = user_message.lower()
-        use_web_search = any(keyword in message_lower for keyword in [
-            'yangın', 'fire', 'yangın tespit', 'fire detection', 'yangın önlem', 
-            'fire prevention', 'yangın risk', 'fire risk', 'orman yangını', 
-            'wildfire', 'güncel', 'son', 'yeni', '2024', '2025', 'haber', 'news',
-            'türkiye', 'turkey', 'antalya', 'muğla', 'izmir', 'çanakkale'
-        ])
-        
-        # Debug: Groq durumunu kontrol et
-        logger.info(f"🔍 Groq AI Durum Kontrolü:")
-        logger.info(f"   Groq: {GROQ_AVAILABLE}, Key: {bool(GROQ_API_KEY)}, Client: {groq_client is not None}")
-        logger.info(f"   Web araması gerekli: {use_web_search}")
-        
-        # Groq AI'yi dene, yoksa kural tabanlı chatbot kullan
-        ai_response = None
-        model_used = 'rule-based'
-        
-        # Groq AI'yi dene
-        logger.info(f"🔍 Groq kontrolü: AVAILABLE={GROQ_AVAILABLE}, KEY={bool(GROQ_API_KEY)}, CLIENT={groq_client is not None}, MODEL={groq_model}")
-        if GROQ_AVAILABLE and GROQ_API_KEY and groq_client:
-            try:
-                logger.info(f"🤖 Groq AI kullanılıyor (model: {groq_model})")
-                
-                # Web araması gerekiyorsa prompt'a ekle
-                if use_web_search:
-                    enhanced_prompt = full_prompt + "\n\nNot: Lütfen güncel web bilgilerini kullanarak yanıt ver. Eğer güncel bilgiye ihtiyaç varsa, bunu belirt."
-                    logger.info("🔍 Web araması için gelişmiş prompt kullanılıyor")
-                else:
-                    enhanced_prompt = full_prompt
-                
-                # OpenAI client kullanarak Groq'a istek gönder
-                response = groq_client.chat.completions.create(
-                    model=groq_model,
-                    messages=[
-                        {"role": "system", "content": "Sen bir yangın güvenliği ve risk analizi uzmanısın. Türkçe yanıt ver. Kısa, net ve anlaşılır yanıtlar ver. Emoji kullan (🔥, ⚠️, 🚨, 🌡️ vb.)."},
-                        {"role": "user", "content": enhanced_prompt}
+        # Veri hazırlama
+        if 'firms_risk' in risk_results and not risk_results['firms_risk'].empty:
+            df_map = risk_results['firms_risk'].copy()
+            
+            # 3D için yükseklik hesapla (risk skoruna göre)
+            if 'risk_score' in df_map.columns:
+                df_map['height'] = df_map['risk_score'] * height_scale
+            else:
+                df_map['height'] = 10
+            
+            # Renk sütunu ekle
+            df_map['color'] = df_map['risk_level'].map(color_map).fillna('#9E9E9E')
+            
+            # 3D Scatter Mapbox oluştur - NASA FIRMS benzeri
+            fig = go.Figure()
+            
+            # Her risk seviyesi için ayrı trace - daha belirgin
+            for risk_level in ['Düşük', 'Orta', 'Yüksek', 'Kritik']:
+                df_level = df_map[df_map['risk_level'] == risk_level]
+                if not df_level.empty:
+                    # Risk seviyesine göre boyut
+                    size_multiplier = {'Düşük': 0.8, 'Orta': 1.0, 'Yüksek': 1.5, 'Kritik': 2.0}
+                    marker_size = point_size * size_multiplier.get(risk_level, 1.0)
+                    
+                    fig.add_trace(go.Scattermapbox(
+                        lat=df_level['latitude'],
+                        lon=df_level['longitude'],
+                        mode='markers',
+                        marker=dict(
+                            size=marker_size,
+                            color=color_map[risk_level],
+                            opacity=0.85,
+                            symbol='circle',
+                            line=dict(width=2, color='white'),
+                            sizemode='diameter',
+                            sizeref=2.*max(df_level.get('risk_score', [50])) / (marker_size**2),
+                            sizemin=4
+                        ),
+                        text=df_level.apply(
+                            lambda row: f"<b>🔥 {risk_level} Risk</b><br>" +
+                                       f"Risk Skoru: {row.get('risk_score', 0):.1f}/100<br>" +
+                                       f"Enlem: {row['latitude']:.4f}°<br>" +
+                                       f"Boylam: {row['longitude']:.4f}°<br>" +
+                                       f"Tarih: {row.get('acq_date', 'Bilinmiyor')}<br>" +
+                                       f"Parlaklık: {row.get('brightness', 'N/A')}",
+                            axis=1
+                        ),
+                        hovertemplate='%{text}<extra></extra>',
+                        name=f"🔥 {risk_level} Risk",
+                        showlegend=True
+                    ))
+            
+            # Seçilen şehri haritada işaretle
+            fig.add_trace(go.Scattermapbox(
+                lat=[selected_location["lat"]],
+                lon=[selected_location["lon"]],
+                mode='markers',
+                marker=dict(
+                    size=15,
+                    color='#2196F3',
+                    opacity=0.8,
+                    symbol='star',
+                    line=dict(width=2, color='white')
+                ),
+                text=[f"📍 {selected_city}"],
+                hovertemplate=f'<b>📍 {selected_city}</b><br>Enlem: {selected_location["lat"]:.4f}°<br>Boylam: {selected_location["lon"]:.4f}°<extra></extra>',
+                name="📍 Seçili Konum",
+                showlegend=True
+            ))
+            
+            # 2. IEEE FLAME-3 termal görüntü verilerini ekle
+            if 'ieee_risk' in risk_results and not risk_results['ieee_risk'].empty:
+                df_ieee = risk_results['ieee_risk'].copy()
+                fig.add_trace(go.Scattermapbox(
+                    lat=df_ieee['latitude'],
+                    lon=df_ieee['longitude'],
+                    mode='markers',
+                    marker=dict(
+                        size=point_size * 1.2,
+                        color='#9C27B0',  # Mor renk - IEEE verisi için
+                        opacity=0.85,
+                        symbol='square',
+                        line=dict(width=2, color='white')
+                    ),
+                    text=df_ieee.apply(
+                        lambda row: f"<b>📡 IEEE FLAME-3 Termal Görüntü</b><br>" +
+                                   f"Risk Seviyesi: {row.get('risk_level', 'Orta')}<br>" +
+                                   f"Risk Skoru: {row.get('risk_score', 0):.1f}/100<br>" +
+                                   f"Konum: {row['latitude']:.4f}°, {row['longitude']:.4f}°<br>" +
+                                   f"<small>Termal İHA Görüntüsü</small>",
+                        axis=1
+                    ),
+                    hovertemplate='%{text}<extra></extra>',
+                    name="📡 IEEE FLAME-3",
+                    showlegend=True
+                ))
+            
+            # Yüksek riskli bölgeleri özel olarak vurgula
+            if 'high_risk_areas' in risk_results and not risk_results['high_risk_areas'].empty:
+                df_high = risk_results['high_risk_areas'].copy()
+                hover_text = df_high.apply(
+                    lambda row: f"<b>⚠️ YÜKSEK RİSK BÖLGESİ</b><br>" +
+                               f"Risk Seviyesi: {row.get('risk_level', 'Yüksek')}<br>" +
+                               f"Ortalama Skor: {row.get('risk_score', 0):.1f}/100<br>" +
+                               f"Konum: {row['latitude']:.4f}°, {row['longitude']:.4f}°<br>" +
+                               f"<span style='color:red; font-weight:bold;'>ACİL MÜDAHALE GEREKLİ!</span>",
+                    axis=1
+                )
+                fig.add_trace(go.Scattermapbox(
+                    lat=df_high['latitude'],
+                    lon=df_high['longitude'],
+                    mode='markers',
+                    marker=dict(
+                        size=point_size * 3,
+                        color='#FF0000',
+                        opacity=0.95,
+                        symbol='triangle',
+                        line=dict(width=4, color='white'),
+                        sizemin=10
+                    ),
+                    text=hover_text,
+                    hovertemplate='%{text}<extra></extra>',
+                    name="⚠️ Yüksek Risk Bölgesi",
+                    showlegend=True
+                ))
+            
+            # Layout ayarları - NASA FIRMS benzeri 3D görünüm
+            # Seçilen şehre göre merkez ayarla
+            mapbox_config = dict(
+                center=dict(lat=selected_location["lat"], lon=selected_location["lon"]),
+                zoom=selected_location["zoom"],
+                bearing=0,
+                pitch=50 if view_3d else 0,  # 3D açı - NASA FIRMS benzeri
+            )
+            
+            # Uydu görüntüleri için custom tile layer
+            if use_custom_tiles:
+                mapbox_config['style'] = "white-bg"  # Arka plan
+                mapbox_config['layers'] = [{
+                    'below': 'traces',
+                    'sourcetype': 'raster',
+                    'source': [
+                        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
                     ],
-                    temperature=0.7,
-                    max_tokens=1000
+                    'opacity': 1.0
+                }]
+            else:
+                mapbox_config['style'] = mapbox_style
+                mapbox_config['layers'] = []
+            
+            fig.update_layout(
+                mapbox=mapbox_config,
+                height=750,
+                margin=dict(l=0, r=0, t=0, b=0),
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=0.01,
+                    bgcolor="rgba(255,255,255,0.95)",
+                    bordercolor="black",
+                    borderwidth=2,
+                    font=dict(size=12),
+                    itemsizing='constant'
+                ),
+                hovermode='closest',
+                paper_bgcolor='white',
+                plot_bgcolor='white'
+            )
+            # 2D görünüm için aynı fig'ü kullan ama pitch=0
+            if not view_3d:
+                fig.update_layout(
+                    mapbox=dict(pitch=0)  # 2D görünüm
                 )
-                ai_response = response.choices[0].message.content.strip()
-                model_used = f'groq-{groq_model}'
-                logger.info(f"✅ Groq AI yanıt üretti (uzunluk: {len(ai_response)} karakter)")
-            except Exception as groq_error:
-                error_msg = str(groq_error)
-                logger.error(f"❌ Groq AI hatası: {error_msg}")
-                logger.error(f"   Hata tipi: {type(groq_error).__name__}")
-                logger.error(f"   Detaylı hata:", exc_info=True)
-                ai_response = None
-        
-        # Kural tabanlı chatbot (fallback)
-        if not ai_response:
-            logger.warning("⚠️ Groq AI kullanılamıyor, kural tabanlı chatbot'a geçiliyor")
-            logger.warning(f"   Groq: AVAILABLE={GROQ_AVAILABLE}, KEY={bool(GROQ_API_KEY)}, CLIENT={groq_client is not None}")
-            ai_response = get_rule_based_response(user_message, sensor_data, risk_areas)
-            model_used = 'rule-based-chatbot'
-        
-        return jsonify({
-            'success': True,
-            'message': ai_response,
-            'model': model_used
-        }), 200
             
-    except Exception as e:
-        logger.error(f"AI Chat API hatası: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'message': f'Hata: {str(e)}'
-        }), 500
-
-
-@app.route('/api/predict-risk', methods=['POST'])
-def predict_risk():
-    """
-    Yangın riski tahmin endpoint'i
-    
-    Request body:
-    {
-        "temperature": 35.5,          # Sıcaklık (°C)
-        "humidity": 30,               # Nem (%)
-        "wind_speed": 15,             # Rüzgar hızı (km/h)
-        "wind_direction": 180,        # Rüzgar yönü (derece)
-        "precipitation": 0,           # Yağış (mm)
-        "month": 7,                   # Ay (1-12)
-        "day_of_year": 200,           # Yılın günü (1-365)
-        "historical_fires_nearby": 2, # Yakındaki geçmiş yangın sayısı
-        "vegetation_index": 0.7,      # Bitki örtüsü indeksi (0-1)
-        "elevation": 500              # Yükseklik (m)
-    }
-    
-    Response:
-    {
-        "success": true,
-        "risk_score": 65.5,
-        "risk_level": "Yüksek",
-        "confidence": 0.85
-    }
-    """
-    try:
-        if not RISK_MODEL_AVAILABLE or fire_risk_predictor is None:
-            return jsonify({
-                'success': False,
-                'message': 'Risk tahmin modeli kullanılamıyor'
-            }), 503
-        
-        if not request.is_json:
-            return jsonify({
-                'success': False,
-                'message': 'Request JSON formatında olmalı'
-            }), 400
-        
-        data = request.get_json()
-        
-        # Varsayılan değerler
-        features = {
-            'temperature': data.get('temperature', 25),
-            'humidity': data.get('humidity', 50),
-            'wind_speed': data.get('wind_speed', 10),
-            'wind_direction': data.get('wind_direction', 180),
-            'precipitation': data.get('precipitation', 0),
-            'month': data.get('month', 7),
-            'day_of_year': data.get('day_of_year', 200),
-            'historical_fires_nearby': data.get('historical_fires_nearby', 0),
-            'vegetation_index': data.get('vegetation_index', 0.5),
-            'elevation': data.get('elevation', 500)
-        }
-        
-        logger.info(f"Risk tahmini isteği: {features}")
-        
-        # Tahmin yap
-        prediction = fire_risk_predictor.predict(features)
-        
-        logger.info(f"Risk tahmini sonucu: {prediction}")
-        
-        return jsonify({
-            'success': True,
-            'risk_score': prediction['risk_score'],
-            'risk_level': prediction['risk_level'],
-            'confidence': prediction['confidence']
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Risk tahmin hatası: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'message': f'Hata: {str(e)}'
-        }), 500
-
-
-@app.route('/api/train-risk-model', methods=['POST'])
-def train_risk_model():
-    """
-    Risk tahmin modelini yeniden eğit
-    
-    Response:
-    {
-        "success": true,
-        "train_score": 0.95,
-        "test_score": 0.92,
-        "feature_importance": {...}
-    }
-    """
-    try:
-        if not RISK_MODEL_AVAILABLE or fire_risk_predictor is None:
-            return jsonify({
-                'success': False,
-                'message': 'Risk tahmin modeli kullanılamıyor'
-            }), 503
-        
-        logger.info("Model eğitimi başlatılıyor...")
-        results = fire_risk_predictor.train()
-        
-        return jsonify({
-            'success': True,
-            'train_score': results['train_score'],
-            'test_score': results['test_score'],
-            'feature_importance': results['feature_importance']
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Model eğitimi hatası: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'message': f'Hata: {str(e)}'
-        }), 500
-
-
-def get_rule_based_response(user_message, sensor_data=None, risk_areas=None):
-    """Kural tabanlı chatbot - API key gerektirmez"""
-    message_lower = user_message.lower()
-    
-    # Yangın riski alanları sorusu
-    if any(word in message_lower for word in ['yangın riski', 'risk alanları', 'riskli yerler', 'en riskli', 'hangi yerler', 'gördüğün yerler', 'neresi']):
-        logger.info(f"Risk alanları sorusu tespit edildi. Risk areas count: {len(risk_areas) if risk_areas else 0}")
-        if risk_areas and len(risk_areas) > 0:
-            # Risk alanlarını sırala
-            sorted_areas = sorted(risk_areas, key=lambda x: x.get('risk_score', 0), reverse=True)
-            response = "🔥 **Yangın Risk Alanları (En Riskli → En Az Riskli):**\n\n"
-            for i, area in enumerate(sorted_areas[:10], 1):
-                name = area.get('name', 'Bilinmeyen')
-                score = area.get('risk_score', 0)
-                lat = area.get('lat', 0)
-                lon = area.get('lon', 0)
-                
-                # Risk seviyesi belirle
-                if score >= 75:
-                    risk_level = "🔴 Kritik"
-                elif score >= 50:
-                    risk_level = "🟠 Yüksek"
-                elif score >= 25:
-                    risk_level = "🟡 Orta"
-                else:
-                    risk_level = "🟢 Düşük"
-                
-                response += f"{i}. **{name}** - {risk_level} (Skor: {score}/100)\n"
-                response += f"   📍 Koordinat: {lat:.4f}°, {lon:.4f}°\n\n"
+            # Haritayı göster
+            st.plotly_chart(fig, use_container_width=True, use_container_height=True)
             
-            response += "\n⚠️ **Öneriler:**\n"
-            response += "- Yüksek riskli bölgelerde dikkatli olun\n"
-            response += "- Yangın önlemlerini artırın\n"
-            response += "- Acil durum planınızı hazır tutun"
+            # Veri kaynakları bilgisi
+            data_sources = []
+            if 'firms_risk' in risk_results and not risk_results['firms_risk'].empty:
+                data_sources.append(f"NASA FIRMS: {len(risk_results['firms_risk'])}")
+            if 'prediction_risk' in risk_results and not risk_results['prediction_risk'].empty:
+                data_sources.append(f"Kaggle Tahmin: {len(risk_results['prediction_risk'])}")
+            if 'ieee_risk' in risk_results and not risk_results['ieee_risk'].empty:
+                data_sources.append(f"IEEE FLAME-3: {len(risk_results['ieee_risk'])}")
             
-            return response
+            # Son güncelleme zamanı
+            last_update = datetime.now().strftime("%H:%M:%S")
+            sources_text = " | ".join(data_sources) if data_sources else "Veri yükleniyor..."
+            st.caption(f"🔄 Son güncelleme: {last_update} | Veriler her {refresh_interval} saniyede bir otomatik yenilenir | {sources_text} | Toplam {len(df_map)} nokta")
         else:
-            return "⚠️ Şu anda risk alanı verisi bulunmuyor. Lütfen harita sekmesinden risk alanlarını görüntüleyin."
+            st.warning("⚠️ Henüz harita verisi yok. Veriler yükleniyor...")
+            # Boş harita göster - seçilen şehre göre
+            fig = go.Figure()
+            fig.update_layout(
+                mapbox=dict(
+                    style=mapbox_style,
+                    center=dict(lat=selected_location["lat"], lon=selected_location["lon"]),
+                    zoom=selected_location["zoom"]
+                ),
+                height=700,
+                margin=dict(l=0, r=0, t=0, b=0)
+            )
+            st.plotly_chart(fig, use_container_width=True)
     
-    # Sensör verileri sorusu
-    if any(word in message_lower for word in ['sensör', 'sensor', 'sıcaklık', 'sicaklik', 'duman', 'mevcut veri']):
-        if sensor_data:
-            response = "🌡️ **Mevcut Sensör Verileri:**\n\n"
+    with col2:
+        st.subheader("📊 Risk İstatistikleri")
+        
+        # Gerçek zamanlı veri göstergesi
+        st.markdown("---")
+        st.markdown("### 📈 Canlı Veriler")
+        
+        # Risk dağılımı
+        if 'firms_risk' in risk_results and not risk_results['firms_risk'].empty and 'risk_level' in risk_results['firms_risk'].columns:
+            risk_counts = risk_results['firms_risk']['risk_level'].value_counts()
             
-            if 'temperature' in sensor_data:
-                temp = sensor_data['temperature']
-                response += f"**Sıcaklık:** {temp}°C\n"
-                if temp > 40:
-                    response += "   ⚠️ Tehlikeli seviye! Hemen önlem alın.\n"
-                elif temp > 30:
-                    response += "   ⚠️ Uyarı seviyesi. Dikkatli olun.\n"
+            if len(risk_counts) > 0:
+                # Pasta grafiği
+                fig_pie = px.pie(
+                    values=risk_counts.values,
+                    names=risk_counts.index,
+                    title="Risk Seviyesi Dağılımı",
+                    color_discrete_map=color_map,
+                    hole=0.4
+                )
+                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                fig_pie.update_layout(height=300, showlegend=True)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            st.markdown("---")
+            st.markdown("### 📉 Metrikler")
+            
+            # İstatistikler - daha görsel
+            col_met1, col_met2 = st.columns(2)
+            
+            with col_met1:
+                st.metric(
+                    "🔥 Toplam Nokta", 
+                    len(risk_results['firms_risk']),
+                    delta=None
+                )
+                
+                if 'risk_score' in risk_results['firms_risk'].columns:
+                    avg_risk = risk_results['firms_risk']['risk_score'].mean()
+                    delta_color = "normal" if avg_risk < 50 else "inverse"
+                    st.metric(
+                        "📊 Ortalama Risk", 
+                        f"{avg_risk:.1f}",
+                        delta=f"{'Yüksek' if avg_risk >= 50 else 'Normal'}"
+                    )
+            
+            with col_met2:
+                if 'high_risk_areas' in risk_results:
+                    high_risk_count = len(risk_results['high_risk_areas']) if not risk_results['high_risk_areas'].empty else 0
+                    st.metric(
+                        "⚠️ Yüksek Risk", 
+                        high_risk_count,
+                        delta="Bölge" if high_risk_count > 0 else None
+                    )
                 else:
-                    response += "   ✅ Normal seviye.\n"
-                response += "\n"
+                    st.metric("⚠️ Yüksek Risk", 0)
+                
+                # Kritik risk sayısı
+                if 'risk_level' in risk_results['firms_risk'].columns:
+                    critical_count = len(risk_results['firms_risk'][risk_results['firms_risk']['risk_level'] == 'Kritik'])
+                    st.metric(
+                        "🚨 Kritik Risk", 
+                        critical_count,
+                        delta="Acil!" if critical_count > 0 else None,
+                        delta_color="inverse"
+                    )
             
-            if 'smoke' in sensor_data:
-                smoke = sensor_data['smoke']
-                response += f"**Duman:** {smoke} PPM\n"
-                if smoke > 150:
-                    response += "   ⚠️ Tehlikeli seviye! Hemen önlem alın.\n"
-                elif smoke > 100:
-                    response += "   ⚠️ Uyarı seviyesi. Dikkatli olun.\n"
-                else:
-                    response += "   ✅ Normal seviye.\n"
-                response += "\n"
-            
-            if 'fire_risk' in sensor_data:
-                risk = sensor_data['fire_risk']
-                response += f"**Yangın Riski:** {risk}/100\n"
-                if risk >= 75:
-                    response += "   🔴 Kritik risk! Acil önlem gerekli.\n"
-                elif risk >= 50:
-                    response += "   🟠 Yüksek risk. Dikkatli olun.\n"
-                elif risk >= 25:
-                    response += "   🟡 Orta risk. Önlem alın.\n"
-                else:
-                    response += "   🟢 Düşük risk. Güvenli.\n"
-            
-            if 'location' in sensor_data:
-                response += f"\n**Konum:** {sensor_data['location']}\n"
-            
-            return response
+            # Risk seviyesi dağılımı tablosu
+            st.markdown("---")
+            st.markdown("### 📋 Detaylı Dağılım")
+            if len(risk_counts) > 0:
+                risk_df = pd.DataFrame({
+                    'Risk Seviyesi': risk_counts.index,
+                    'Nokta Sayısı': risk_counts.values,
+                    'Yüzde': (risk_counts.values / risk_counts.sum() * 100).round(1)
+                })
+                st.dataframe(risk_df, use_container_width=True, hide_index=True)
         else:
-            return "⚠️ Şu anda sensör verisi bulunmuyor. Lütfen izleme panosu sekmesinden sensör verilerini görüntüleyin."
+            st.info("📭 Henüz risk verisi yok. Veriler yükleniyor...")
+            st.spinner("Veriler yükleniyor...")
+
+# TAB 2: Yayılma Tahmini
+with tab2:
+    st.header("Yangın Yayılma Tahmini")
     
-    # Yangın nedir?
-    if any(word in message_lower for word in ['yangın nedir', 'yangin nedir', 'yangın ne', 'fire nedir']):
-        return """🔥 **Yangın Nedir?**
-
-Yangın, yanıcı madde, oksijen ve ısının bir araya gelmesiyle oluşan kontrolsüz yanma olayıdır.
-
-**Yangın Üçgeni:**
-1. **Yanıcı Madde**: Odun, kağıt, benzin, gaz vb.
-2. **Oksijen**: Havadaki oksijen (%21)
-3. **Isı**: Ateş, kıvılcım, sürtünme
-
-Bu üçünden biri olmazsa yangın çıkmaz veya söner."""
+    # Yayılma tahmin modelini eğit
+    predictor = SpreadPredictor()
+    predictor.train_model(all_data['spread'])
     
-    # Yangın türleri
-    elif any(word in message_lower for word in ['yangın türleri', 'yangin turleri', 'yangın sınıfları', 'fire types']):
-        return """🔥 **Yangın Türleri (Sınıfları)**
-
-**A Sınıfı Yangınlar:**
-- Katı maddeler (odun, kağıt, kumaş)
-- Söndürme: Su, köpük
-
-**B Sınıfı Yangınlar:**
-- Yanıcı sıvılar (benzin, mazot, boya)
-- Söndürme: Köpük, kuru kimyevi toz
-
-**C Sınıfı Yangınlar:**
-- Yanıcı gazlar (LPG, doğalgaz)
-- Söndürme: Kuru kimyevi toz (önce gazı kesin!)
-
-**D Sınıfı Yangınlar:**
-- Yanıcı metaller (magnezyum, alüminyum)
-- Söndürme: Özel kuru toz"""
+    col1, col2 = st.columns(2)
     
-    # Önlemler
-    elif any(word in message_lower for word in ['önlem', 'onlem', 'nasıl önlenir', 'nasil onlenir', 'prevention']):
-        return """⚠️ **Yangın Önlemleri**
-
-**Evde:**
-- Sigara içmeyin, içiyorsanız söndürün
-- Elektrikli cihazları kapatın
-- Mutfakta yemek yaparken dikkatli olun
-- Yanıcı maddeleri güvenli yerde saklayın
-- Duman dedektörü takın
-
-**Orman:**
-- Ateş yakmayın
-- Sigara izmariti atmayın
-- Cam şişe bırakmayın (güneş ışığı yangın çıkarabilir)
-- Çöpleri toplayın"""
+    with col1:
+        st.subheader("Mevcut Yangınlar")
+        
+        # Aktif yangınları göster
+        if 'firms_risk' in risk_results and not risk_results['firms_risk'].empty and 'risk_score' in risk_results['firms_risk'].columns:
+            active_fires = risk_results['firms_risk'][risk_results['firms_risk']['risk_score'] >= 50]
+            
+            if not active_fires.empty:
+                for idx, fire in active_fires.head(5).iterrows():
+                    with st.expander(f"🔥 Yangın #{idx+1} - {fire.get('risk_level', 'Yüksek')} Risk", expanded=True):
+                        # Yangın anındaki bilgiler
+                        st.markdown("### 📍 Yangın Anındaki Durum")
+                        
+                        col_info1, col_info2 = st.columns(2)
+                        with col_info1:
+                            st.write(f"**🌍 Konum:**")
+                            st.write(f"Enlem: {fire['latitude']:.4f}°")
+                            st.write(f"Boylam: {fire['longitude']:.4f}°")
+                            
+                            # Tarih bilgisi
+                            if 'acq_date' in fire:
+                                st.write(f"**📅 Tarih:** {fire['acq_date']}")
+                            if 'acq_time' in fire:
+                                st.write(f"**⏰ Saat:** {fire['acq_time']}")
+                        
+                        with col_info2:
+                            st.write(f"**📊 Risk Bilgileri:**")
+                            st.write(f"Risk Skoru: **{fire.get('risk_score', 0):.1f}/100**")
+                            st.write(f"Risk Seviyesi: **{fire.get('risk_level', 'Yüksek')}**")
+                            
+                            # FRP bilgisi
+                            if 'frp' in fire:
+                                st.write(f"**🔥 FRP:** {fire['frp']:.2f} MW")
+                            if 'confidence' in fire:
+                                st.write(f"**✓ Güven:** %{fire['confidence']:.0f}")
+                        
+                        # Yayılma tahmini
+                        weather_data = all_data['prediction'] if not all_data['prediction'].empty else None
+                        spread_pred = predictor.predict_spread(pd.DataFrame([fire]), weather_data)
+                        
+                        st.markdown("---")
+                        st.markdown("### 🔥 Yangın Anındaki Yanan Alan")
+                        
+                        col_area1, col_area2, col_area3 = st.columns(3)
+                        with col_area1:
+                            st.metric("Yanan Alan (km²)", f"{spread_pred.get('current_area_km2', 0.1):.3f}")
+                        with col_area2:
+                            st.metric("Yanan Alan (hektar)", f"{spread_pred.get('current_area_ha', 10):.1f}")
+                        with col_area3:
+                            st.metric("Yanan Alan (m²)", f"{spread_pred.get('current_area_m2', 100000):,.0f}")
+                        
+                        st.markdown("---")
+                        st.markdown("### 📈 Yayılma Tahmini")
+                        
+                        col_spread1, col_spread2 = st.columns(2)
+                        with col_spread1:
+                            st.metric("⚡ Yayılma Hızı", f"{spread_pred['speed_kmh']:.2f} km/saat")
+                            st.metric("🧭 Yayılma Yönü", spread_pred['direction_name'])
+                            st.metric("📐 Yön (Derece)", f"{spread_pred['direction_degrees']:.1f}°")
+                        
+                        with col_spread2:
+                            # 1 saatlik yayılma
+                            spread_1h = predictor.calculate_spread_area(
+                                spread_pred.get('current_area_km2', 0.1), 
+                                spread_pred['speed_kmh'], 
+                                1
+                            )
+                            st.metric("⏱️ 1 Saat Sonra", f"{spread_1h['total_area_km2']:.3f} km²")
+                            
+                            # 6 saatlik yayılma
+                            spread_6h = predictor.calculate_spread_area(
+                                spread_pred.get('current_area_km2', 0.1), 
+                                spread_pred['speed_kmh'], 
+                                6
+                            )
+                            st.metric("⏱️ 6 Saat Sonra", f"{spread_6h['total_area_km2']:.3f} km²")
+                            
+                            # 24 saatlik yayılma
+                            spread_24h = predictor.calculate_spread_area(
+                                spread_pred.get('current_area_km2', 0.1), 
+                                spread_pred['speed_kmh'], 
+                                24
+                            )
+                            st.metric("⏱️ 24 Saat Sonra", f"{spread_24h['total_area_km2']:.3f} km²")
+                        
+                        # Yayılma grafiği
+                        st.markdown("---")
+                        st.markdown("### 📊 Yayılma Zaman Çizelgesi")
+                        
+                        hours = [0, 1, 3, 6, 12, 24]
+                        areas = []
+                        current = spread_pred.get('current_area_km2', 0.1)
+                        
+                        for h in hours:
+                            if h == 0:
+                                areas.append(current)
+                            else:
+                                spread = predictor.calculate_spread_area(current, spread_pred['speed_kmh'], h)
+                                areas.append(spread['total_area_km2'])
+                        
+                        fig_timeline = go.Figure()
+                        fig_timeline.add_trace(go.Scatter(
+                            x=hours,
+                            y=areas,
+                            mode='lines+markers',
+                            name='Yanan Alan',
+                            line=dict(color='red', width=3),
+                            marker=dict(size=10, color='red'),
+                            fill='tozeroy',
+                            fillcolor='rgba(255,0,0,0.2)'
+                        ))
+                        fig_timeline.update_layout(
+                            title="Yangın Yayılma Zaman Çizelgesi",
+                            xaxis_title="Süre (saat)",
+                            yaxis_title="Yanan Alan (km²)",
+                            height=300,
+                            hovermode='x unified'
+                        )
+                        st.plotly_chart(fig_timeline, use_container_width=True)
+            else:
+                st.info("Şu anda aktif yangın tespit edilmedi.")
     
-    # Acil durum
-    elif any(word in message_lower for word in ['acil', 'ne yapmalı', 'ne yapmali', 'emergency', 'yangın çıktı']):
-        return """🚨 **Yangın Çıktığında Yapılacaklar**
+    with col2:
+        st.subheader("Yayılma Görselleştirme")
+        
+        # Örnek yayılma simülasyonu
+        if 'firms_risk' in risk_results and not risk_results['firms_risk'].empty:
+            sample_fire = risk_results['firms_risk'].iloc[0]
+            weather_data = all_data['prediction'] if not all_data['prediction'].empty else None
+            spread_pred = predictor.predict_spread(pd.DataFrame([sample_fire]), weather_data)
+            
+            # Yayılma yönü görselleştirme
+            fig = go.Figure()
+            
+            # Merkez nokta
+            fig.add_trace(go.Scatterpolar(
+                r=[0, spread_pred['speed_kmh']],
+                theta=[0, spread_pred['direction_degrees']],
+                mode='lines+markers',
+                name='Yayılma Yönü',
+                line=dict(color='red', width=3),
+                marker=dict(size=10)
+            ))
+            
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(range=[0, 20], title="Hız (km/h)"),
+                    angularaxis=dict(
+                        tickmode='array',
+                        tickvals=[0, 45, 90, 135, 180, 225, 270, 315],
+                        ticktext=['K', 'KD', 'D', 'GD', 'G', 'GB', 'B', 'KB']
+                    )
+                ),
+                title="Yayılma Yönü ve Hızı",
+                height=400
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
 
-1. **Sakin olun**, panik yapmayın
-2. **110'u arayın** (İtfaiye)
-3. **Yangını söndürmeye çalışın** (küçükse)
-4. **Büyükse kaçın**, kapıları kapatın
-5. **Asansör kullanmayın**, merdiven kullanın
-6. **Duman varsa eğilin**, ıslak bezle ağzınızı kapatın
-7. **Pencere açmayın** (oksijen yangını büyütür)
-
-**Acil Telefonlar:**
-- İtfaiye: 110
-- Ambulans: 112
-- Polis: 155"""
+# TAB 3: Kaynak İhtiyacı
+with tab3:
+    st.header("Söndürme Kaynak İhtiyacı")
     
-    # Merhaba / Selam
-    elif any(word in message_lower for word in ['merhaba', 'selam', 'hello', 'hi', 'naber']):
-        return """Merhaba! 👋
-
-Ben yangın güvenliği ve risk analizi asistanıyım. Size şu konularda yardımcı olabilirim:
-
-🔥 Yangın nedir?
-🔥 Yangın türleri
-⚠️ Yangın önlemleri
-🚨 Acil durum prosedürleri
-🌡️ Sensör verileri analizi
-📍 Yangın risk alanları (en riskliden en aza sıralama)
-🔍 Yangın tespit yöntemleri
-💻 Genel sorular (web, teknoloji vb.)
-
-Ne hakkında bilgi almak istersiniz?"""
+    calculator = ResourceCalculator()
     
-    # Teşekkür
-    elif any(word in message_lower for word in ['teşekkür', 'tesekkur', 'sağol', 'sagol', 'thanks', 'thank you']):
-        return """Rica ederim! 😊
-
-Başka bir sorunuz varsa çekinmeyin. Yangın güvenliği konusunda size yardımcı olmaktan mutluluk duyarım.
-
-Unutmayın: Yangın güvenliği herkesin sorumluluğudur! 🔥"""
+    col1, col2 = st.columns(2)
     
-    # Varsayılan yanıt
+    with col1:
+        st.subheader("Yangın Bilgileri")
+        
+        # Kullanıcı girişi
+        fire_area = st.number_input("Yangın Alanı (km²)", min_value=0.1, max_value=1000.0, value=5.0, step=0.1)
+        fire_intensity = st.selectbox("Yangın Yoğunluğu", ['Düşük', 'Orta', 'Yüksek', 'Kritik'], index=2)
+        terrain_type = st.selectbox("Arazi Tipi", ['Orman', 'Çalılık', 'Otlak', 'Tarım'], index=0)
+        
+        if st.button("Kaynak İhtiyacını Hesapla"):
+            resources = calculator.calculate_resources(fire_area, fire_intensity, terrain_type)
+            
+            st.session_state['resources'] = resources
+    
+    with col2:
+        st.subheader("Gerekli Kaynaklar")
+        
+        if 'resources' in st.session_state:
+            res = st.session_state['resources']
+            
+            # Metrikler
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric("İtfaiye Aracı", f"{res['trucks_needed']} adet")
+                st.metric("Ekip", f"{res['teams_needed']} adet")
+                st.metric("Helikopter", f"{res['helicopters_needed']} adet")
+            
+            with col_b:
+                st.metric("Tahmini Süre", f"{res['estimated_hours']} saat")
+                st.metric("Su İhtiyacı", f"{res['water_needed_liters']:,} litre")
+                st.metric("Tahmini Maliyet", f"{res['estimated_cost_tl']:,} TL")
+            
+            # Öneriler
+            st.subheader("Öneriler")
+            recommendations = calculator.get_resource_recommendations(res)
+            for rec in recommendations:
+                st.info(rec)
+            
+            # Görselleştirme
+            fig = go.Figure(data=[
+                go.Bar(name='İhtiyaç', x=['Araç', 'Ekip', 'Helikopter'], 
+                      y=[res['trucks_needed'], res['teams_needed'], res['helicopters_needed']],
+                      marker_color=['#FF6B6B', '#4ECDC4', '#45B7D1'])
+            ])
+            fig.update_layout(title="Kaynak İhtiyacı", yaxis_title="Adet", height=300)
+            st.plotly_chart(fig, use_container_width=True)
+
+# TAB 4: Uyarı Sistemi
+with tab4:
+    st.header("Uyarı Sistemi")
+    
+    alert_system = AlertSystem()
+    
+    # SMS Notifier oluştur
+    sms_notifier = create_sms_notifier(phone_number=phone_number)
+    
+    # En yüksek riskli yangını bul
+    if 'firms_risk' in risk_results and not risk_results['firms_risk'].empty and 'risk_score' in risk_results['firms_risk'].columns:
+        max_risk_fire = risk_results['firms_risk'].loc[risk_results['firms_risk']['risk_score'].idxmax()]
+        max_risk_level = max_risk_fire.get('risk_level', 'Orta')
+        max_risk_score = max_risk_fire.get('risk_score', 0)
+        
+        # Uyarı mesajı
+        if max_risk_level == 'Kritik':
+            message = "KRİTİK YANGIN RİSKİ TESPİT EDİLDİ!"
+        elif max_risk_level == 'Yüksek':
+            message = "Yüksek Yangın Riski Tespit Edildi"
+        elif max_risk_level == 'Orta':
+            message = "Orta Seviye Yangın Riski"
+        else:
+            message = "Düşük Seviye Yangın Riski"
+        
+        # SMS gönder (eğer aktifse ve yüksek/kritik risk varsa)
+        if sms_enabled and max_risk_level in ['Yüksek', 'Kritik']:
+            location_str = f"{max_risk_fire['latitude']:.4f}°, {max_risk_fire['longitude']:.4f}°"
+            sms_sent = sms_notifier.send_fire_alert_sms(
+                risk_level=max_risk_level,
+                location=location_str,
+                risk_score=max_risk_score,
+                latitude=max_risk_fire['latitude'],
+                longitude=max_risk_fire['longitude']
+            )
+            
+            if sms_sent:
+                st.success(f"✅ SMS bildirimi gönderildi: {phone_number}")
+            else:
+                st.info("ℹ️ SMS gönderilemedi. Twilio yapılandırmasını kontrol edin. (SMS_KURULUM.md dosyasına bakın)")
+        
+        # Uyarı göster
+        alert_html = alert_system.create_alert_banner(max_risk_level, message)
+        st.markdown(alert_html, unsafe_allow_html=True)
+        
+        # Detaylar
+        st.subheader("Uyarı Detayları")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Risk Seviyesi", max_risk_level)
+        with col2:
+            st.metric("Risk Skoru", f"{max_risk_score:.1f}")
+        with col3:
+            st.metric("Konum", f"{max_risk_fire['latitude']:.2f}, {max_risk_fire['longitude']:.2f}")
+        
+        # Tüm risk seviyeleri
+        st.subheader("Tüm Risk Seviyeleri")
+        
+        risk_levels = ['Düşük', 'Orta', 'Yüksek', 'Kritik']
+        for level in risk_levels:
+            color = alert_system.get_alert_color(level)
+            if 'risk_level' in risk_results['firms_risk'].columns:
+                count = len(risk_results['firms_risk'][risk_results['firms_risk']['risk_level'] == level])
+            else:
+                count = 0
+            
+            st.markdown(f"""
+            <div style="
+                background-color: {color};
+                color: white;
+                padding: 10px;
+                border-radius: 5px;
+                margin: 5px 0;
+            ">
+                <strong>{level} Risk:</strong> {count} nokta
+            </div>
+            """, unsafe_allow_html=True)
     else:
-        return """Üzgünüm, bu konuda detaylı bilgim yok. 😔
+        st.info("Şu anda risk tespit edilmedi.")
 
-Size şu konularda yardımcı olabilirim:
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-top: 20px;">
+    <h4>📌 Önemli Notlar</h4>
+    <p><strong>⚠️ Bu sistem eğitim amaçlıdır!</strong> Gerçek yangın durumunda hemen <strong>112</strong>'yi arayın!</p>
+    <p><strong>🛰️ Uydu Görüntüleri:</strong> Esri World Imagery - Gerçek zamanlı uydu fotoğrafları</p>
+    <p><strong>📡 Veri Kaynakları:</strong> NASA FIRMS, Kaggle, IEEE</p>
+    <p><strong>🔄 Gerçek Zamanlı:</strong> Veriler otomatik olarak güncellenir (ayarlanabilir)</p>
+</div>
+""", unsafe_allow_html=True)
 
-🔥 Yangın nedir?
-🔥 Yangın türleri (A, B, C, D sınıfları)
-⚠️ Yangın önlemleri
-🚨 Acil durum prosedürleri
-🌡️ Sensör bilgileri
-📍 Yangın risk alanları
-🔍 Yangın tespit yöntemleri
-💻 Genel sorular
-
-Lütfen sorunuzu bu konulardan biriyle ilgili olarak sorun."""
-
-
-if __name__ == '__main__':
-    # Windows konsol encoding sorununu çöz
-    import sys
-    import io
-    if sys.platform == 'win32':
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+# Otomatik yenileme - gerçek zamanlı
+if auto_refresh:
+    # Streamlit'in otomatik yenileme için meta refresh kullan
+    refresh_meta = f'<meta http-equiv="refresh" content="{refresh_interval}">'
+    st.markdown(refresh_meta, unsafe_allow_html=True)
     
-    port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_ENV') == 'development'
+    # Geri sayım göstergesi
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = datetime.now()
     
-    print("=" * 50)
-    print("Yangın Risk Analizi Web Uygulaması Başlatılıyor...")
-    print("=" * 50)
-    print(f"Port: {port}")
-    print(f"Debug: {debug}")
-    print("=" * 50)
+    elapsed = (datetime.now() - st.session_state.last_refresh).seconds
+    remaining = max(0, refresh_interval - elapsed)
     
-    app.run(debug=debug, port=port, host='0.0.0.0')
+    if remaining > 0:
+        progress = 1 - (remaining / refresh_interval)
+        st.sidebar.progress(progress)
+        st.sidebar.caption(f"⏱️ {remaining} saniye sonra otomatik yenilenecek")
+    
+    # Cache'i temizle (her yenilemede yeni veri çekmek için)
+    if elapsed >= refresh_interval:
+        st.cache_data.clear()
+        st.session_state.last_refresh = datetime.now()
 
+# TAB 5: Yangın Simülasyonu
+with tab5:
+    st.header("🎮 Yangın Simülasyonu - Örnek Senaryo")
+    st.markdown("Bu simülasyon, sistemin yangın anında nasıl çalıştığını gösterir.")
+    
+    # Simulation controls
+    col_control1, col_control2, col_control3 = st.columns(3)
+    
+    with col_control1:
+        start_sim = st.button("▶️ Simülasyonu Başlat", use_container_width=True, type="primary")
+    with col_control2:
+        pause_sim = st.button("⏸️ Duraklat / Devam Et", use_container_width=True)
+    with col_control3:
+        reset_sim = st.button("🔄 Sıfırla", use_container_width=True)
+    
+    sim_speed = st.slider("Simülasyon Hızı", 1, 5, 2, help="1x = Gerçek zamanlı, 5x = 5 kat hızlı")
+    
+    # Initialize simulation state
+    if 'sim_running' not in st.session_state:
+        st.session_state.sim_running = False
+    if 'sim_paused' not in st.session_state:
+        st.session_state.sim_paused = False
+    if 'sim_time' not in st.session_state:
+        st.session_state.sim_time = 0
+    if 'sim_area' not in st.session_state:
+        st.session_state.sim_area = 0.01
+    if 'sim_speed' not in st.session_state:
+        st.session_state.sim_speed = 2.5
+    if 'sim_direction' not in st.session_state:
+        st.session_state.sim_direction = 135
+    if 'sim_alerts' not in st.session_state:
+        st.session_state.sim_alerts = []
+    
+    # Simulation scenario
+    st.markdown("---")
+    st.markdown("### 📋 Senaryo: Antalya - Manavgat Orman Yangını")
+    col_scen1, col_scen2 = st.columns(2)
+    with col_scen1:
+        st.info("**Başlangıç:** Küçük bir çalı yangını\n\n**Konum:** 36.8°K, 31.4°D\n\n**Tarih:** " + datetime.now().strftime("%d.%m.%Y"))
+    with col_scen2:
+        st.info("**Hava Durumu:** Sıcak, kuru, rüzgarlı\n\n**Rüzgar:** 15 km/h, Güneydoğu\n\n**Sıcaklık:** 35°C")
+    
+    # Simulation stats
+    st.markdown("---")
+    st.markdown("### 📊 Yangın Durumu")
+    
+    col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+    
+    with col_stat1:
+        st.metric("🔥 Yanan Alan", f"{st.session_state.sim_area:.3f} km²", 
+                 delta=f"{(st.session_state.sim_area * 100):.1f} hektar")
+        area_progress = min((st.session_state.sim_area / 10) * 100, 100)
+        st.progress(area_progress / 100)
+    
+    with col_stat2:
+        st.metric("⚡ Yayılma Hızı", f"{st.session_state.sim_speed:.1f} km/h")
+        speed_progress = (st.session_state.sim_speed / 20) * 100
+        st.progress(speed_progress / 100)
+    
+    with col_stat3:
+        directions = ['Kuzey', 'Kuzeydoğu', 'Doğu', 'Güneydoğu', 'Güney', 'Güneybatı', 'Batı', 'Kuzeybatı']
+        dir_index = int((st.session_state.sim_direction + 22.5) / 45) % 8
+        st.metric("🧭 Yayılma Yönü", directions[dir_index], 
+                 delta=f"{st.session_state.sim_direction:.0f}°")
+    
+    with col_stat4:
+        hours = st.session_state.sim_time // 60
+        minutes = st.session_state.sim_time % 60
+        st.metric("⏱️ Geçen Süre", f"{hours}:{minutes:02d}")
+        time_progress = min((st.session_state.sim_time / 120) * 100, 100)
+        st.progress(time_progress / 100)
+    
+    # Update simulation
+    if start_sim:
+        st.session_state.sim_running = True
+        st.session_state.sim_paused = False
+        st.session_state.sim_alerts.append({
+            'time': datetime.now().strftime("%H:%M:%S"),
+            'type': 'info',
+            'message': '🔥 Yangın tespit edildi! Simülasyon başlatıldı.'
+        })
+        st.rerun()
+    
+    if pause_sim and st.session_state.sim_running:
+        st.session_state.sim_paused = not st.session_state.sim_paused
+        st.rerun()
+    
+    if reset_sim:
+        st.session_state.sim_running = False
+        st.session_state.sim_paused = False
+        st.session_state.sim_time = 0
+        st.session_state.sim_area = 0.01
+        st.session_state.sim_speed = 2.5
+        st.session_state.sim_alerts = []
+        if 'sim_chart_data' in st.session_state:
+            st.session_state.sim_chart_data = {'time': [], 'area': []}
+        st.rerun()
+    
+    # Auto-update if running
+    if st.session_state.sim_running and not st.session_state.sim_paused:
+        # Update simulation
+        st.session_state.sim_time += 1
+        
+        # Calculate area growth
+        radius_km = st.session_state.sim_speed * (st.session_state.sim_time / 60)
+        st.session_state.sim_area = np.pi * (radius_km ** 2) + 0.01
+        
+        # Increase speed
+        st.session_state.sim_speed = min(2.5 + (15 * 0.1) + ((35 - 25) * 0.1), 20)
+        
+        # Add alerts
+        if st.session_state.sim_time == 5:
+            st.session_state.sim_alerts.append({
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'type': 'warning',
+                'message': f'⚠️ Yangın hızla büyüyor! Yayılma hızı: {st.session_state.sim_speed:.1f} km/h'
+            })
+        if st.session_state.sim_time == 15:
+            st.session_state.sim_alerts.append({
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'type': 'warning',
+                'message': '⚠️ Yangın alanı 1 km²\'yi aştı! Acil müdahale gerekli.'
+            })
+        if st.session_state.sim_time == 30:
+            st.session_state.sim_alerts.append({
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'type': 'danger',
+                'message': '🚨 KRİTİK: Yangın kontrol altına alınamıyor! Evakuasyon gerekebilir.'
+            })
+        
+        # Initialize chart data if needed
+        if 'sim_chart_data' not in st.session_state:
+            st.session_state.sim_chart_data = {'time': [], 'area': []}
+        
+        # Update chart data
+        st.session_state.sim_chart_data['time'].append(st.session_state.sim_time)
+        st.session_state.sim_chart_data['area'].append(st.session_state.sim_area)
+        
+        # Keep only last 60 points
+        if len(st.session_state.sim_chart_data['time']) > 60:
+            st.session_state.sim_chart_data['time'].pop(0)
+            st.session_state.sim_chart_data['area'].pop(0)
+        
+        # Auto-refresh
+        time.sleep(1.0 / sim_speed)
+        st.rerun()
+    
+    # Display chart
+    st.markdown("---")
+    st.markdown("### 📈 Yangın Gelişimi")
+    
+    if 'sim_chart_data' in st.session_state and len(st.session_state.sim_chart_data.get('time', [])) > 0:
+        fig_sim = go.Figure()
+        fig_sim.add_trace(go.Scatter(
+            x=st.session_state.sim_chart_data['time'],
+            y=st.session_state.sim_chart_data['area'],
+            mode='lines+markers',
+            name='Yanan Alan',
+            line=dict(color='red', width=3),
+            marker=dict(size=8, color='red'),
+            fill='tozeroy',
+            fillcolor='rgba(255,0,0,0.2)'
+        ))
+        fig_sim.update_layout(
+            title="Yangın Yayılma Zaman Çizelgesi",
+            xaxis_title="Zaman (dakika)",
+            yaxis_title="Yanan Alan (km²)",
+            height=400,
+            hovermode='x unified'
+        )
+        st.plotly_chart(fig_sim, use_container_width=True)
+    else:
+        st.info("Simülasyonu başlattığınızda grafik burada görünecek.")
+    
+    # Alerts
+    st.markdown("---")
+    st.markdown("### ⚠️ Uyarılar ve Bildirimler")
+    
+    if st.session_state.sim_alerts:
+        for alert in reversed(st.session_state.sim_alerts[-10:]):  # Show last 10
+            if alert['type'] == 'info':
+                st.info(f"**{alert['time']}** - {alert['message']}")
+            elif alert['type'] == 'warning':
+                st.warning(f"**{alert['time']}** - {alert['message']}")
+            elif alert['type'] == 'danger':
+                st.error(f"**{alert['time']}** - {alert['message']}")
+    else:
+        st.info("Henüz uyarı yok. Simülasyonu başlatın.")
+    
+    # Simulation map
+    st.markdown("---")
+    st.markdown("### 🗺️ Yangın Haritası")
+    
+    fire_lat = 36.8
+    fire_lon = 31.4
+    
+    # Calculate fire radius
+    radius_km = np.sqrt(st.session_state.sim_area / np.pi)
+    radius_deg = radius_km / 111
+    
+    # Create circle points
+    circle_points = []
+    for i in range(0, 361, 10):
+        rad = np.radians(i)
+        circle_points.append({
+            'lat': fire_lat + radius_deg * np.cos(rad),
+            'lon': fire_lon + radius_deg * np.sin(rad)
+        })
+    
+    fig_sim_map = go.Figure()
+    
+    # Fire center
+    fig_sim_map.add_trace(go.Scattermapbox(
+        lat=[fire_lat],
+        lon=[fire_lon],
+        mode='markers',
+        marker=dict(size=20, color='red', symbol='fire'),
+        text=['Yangın Merkezi'],
+        name='Yangın Merkezi'
+    ))
+    
+    # Fire area
+    if len(circle_points) > 0:
+        fig_sim_map.add_trace(go.Scattermapbox(
+            lat=[p['lat'] for p in circle_points],
+            lon=[p['lon'] for p in circle_points],
+            mode='lines',
+            line=dict(color='red', width=3),
+            fill='toself',
+            fillcolor='rgba(255,0,0,0.3)',
+            text=[f'Yanan Alan: {st.session_state.sim_area:.3f} km²'],
+            name='Yanan Alan'
+        ))
+    
+    fig_sim_map.update_layout(
+        mapbox=dict(
+            style='open-street-map',
+            center=dict(lat=fire_lat, lon=fire_lon),
+            zoom=11
+        ),
+        height=500,
+        margin=dict(l=0, r=0, t=0, b=0)
+    )
+    
+    st.plotly_chart(fig_sim_map, use_container_width=True)
+
+# TAB 6: Yangın Tarihçesi
+with tab6:
+    st.header("📊 Şehirlere Göre Yangın Tarihçesi")
+    st.markdown("Türkiye'deki şehirlerin yıllara göre yangın geçmişi ve yanan alanlar")
+    
+    # Şehir seçimi
+    historical_data = all_data.get('historical', pd.DataFrame())
+    
+    if not historical_data.empty:
+        # Şehir listesi
+        cities_list = sorted(historical_data['city'].unique().tolist())
+        selected_hist_city = st.selectbox("Şehir Seçin:", cities_list, key="hist_city_select")
+        
+        # Seçili şehir için verileri filtrele
+        city_data = historical_data[historical_data['city'] == selected_hist_city].copy()
+        
+        if not city_data.empty:
+            # İstatistikler
+            col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+            
+            with col_stat1:
+                total_fires = len(city_data)
+                st.metric("🔥 Toplam Yangın", total_fires)
+            
+            with col_stat2:
+                total_area = city_data['area_km2'].sum()
+                st.metric("📏 Toplam Yanan Alan", f"{total_area:.2f} km²", 
+                         delta=f"{total_area*100:.0f} hektar")
+            
+            with col_stat3:
+                avg_area = city_data['area_km2'].mean()
+                st.metric("📊 Ortalama Alan", f"{avg_area:.2f} km²")
+            
+            with col_stat4:
+                max_year = city_data['year'].max()
+                min_year = city_data['year'].min()
+                st.metric("📅 Yıl Aralığı", f"{min_year}-{max_year}")
+            
+            st.markdown("---")
+            
+            # Yıllara göre yangın sayısı ve alan grafiği
+            st.subheader("📈 Yıllara Göre Yangın İstatistikleri")
+            
+            yearly_stats = city_data.groupby('year').agg({
+                'area_km2': ['sum', 'mean', 'count']
+            }).reset_index()
+            yearly_stats.columns = ['year', 'total_area', 'avg_area', 'fire_count']
+            
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                fig_yearly_count = go.Figure()
+                fig_yearly_count.add_trace(go.Bar(
+                    x=yearly_stats['year'],
+                    y=yearly_stats['fire_count'],
+                    name='Yangın Sayısı',
+                    marker_color='#ff6b6b'
+                ))
+                fig_yearly_count.update_layout(
+                    title="Yıllara Göre Yangın Sayısı",
+                    xaxis_title="Yıl",
+                    yaxis_title="Yangın Sayısı",
+                    height=400
+                )
+                st.plotly_chart(fig_yearly_count, use_container_width=True)
+            
+            with col_chart2:
+                fig_yearly_area = go.Figure()
+                fig_yearly_area.add_trace(go.Bar(
+                    x=yearly_stats['year'],
+                    y=yearly_stats['total_area'],
+                    name='Toplam Yanan Alan',
+                    marker_color='#ff9800'
+                ))
+                fig_yearly_area.update_layout(
+                    title="Yıllara Göre Toplam Yanan Alan",
+                    xaxis_title="Yıl",
+                    yaxis_title="Alan (km²)",
+                    height=400
+                )
+                st.plotly_chart(fig_yearly_area, use_container_width=True)
+            
+            # Aylara göre dağılım
+            st.markdown("---")
+            st.subheader("📅 Aylara Göre Yangın Dağılımı")
+            
+            monthly_stats = city_data.groupby('month').agg({
+                'area_km2': 'sum',
+                'fire_lat': 'count'
+            }).reset_index()
+            monthly_stats.columns = ['month', 'total_area', 'fire_count']
+            month_names = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 
+                          'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık']
+            monthly_stats['month_name'] = monthly_stats['month'].apply(lambda x: month_names[x-1] if 1 <= x <= 12 else 'Bilinmiyor')
+            
+            fig_monthly = go.Figure()
+            fig_monthly.add_trace(go.Bar(
+                x=monthly_stats['month_name'],
+                y=monthly_stats['fire_count'],
+                name='Yangın Sayısı',
+                marker_color='#f44336'
+            ))
+            fig_monthly.update_layout(
+                title="Aylara Göre Yangın Sayısı",
+                xaxis_title="Ay",
+                yaxis_title="Yangın Sayısı",
+                height=400
+            )
+            st.plotly_chart(fig_monthly, use_container_width=True)
+            
+            # Tarihsel yangınlar haritası
+            st.markdown("---")
+            st.subheader("🗺️ Tarihsel Yangınlar Haritası")
+            
+            # Şehir merkezi
+            city_coords = city_data.iloc[0]
+            city_lat = city_coords['city_lat']
+            city_lon = city_coords['city_lon']
+            
+            fig_hist_map = go.Figure()
+            
+            # Her yangını farklı renkte göster (yıla göre)
+            years = sorted(city_data['year'].unique())
+            colors = px.colors.qualitative.Set3[:len(years)]
+            year_color_map = dict(zip(years, colors))
+            
+            for year in years:
+                year_fires = city_data[city_data['year'] == year]
+                fig_hist_map.add_trace(go.Scattermapbox(
+                    lat=year_fires['fire_lat'],
+                    lon=year_fires['fire_lon'],
+                    mode='markers',
+                    marker=dict(
+                        size=year_fires['area_km2'] * 5 + 10,  # Alan büyüklüğüne göre
+                        color=year_color_map[year],
+                        opacity=0.7,
+                        line=dict(width=2, color='white')
+                    ),
+                    text=year_fires.apply(
+                        lambda row: f"<b>{row['description']}</b><br>" +
+                                   f"Yıl: {row['year']}<br>" +
+                                   f"Alan: {row['area_km2']:.2f} km² ({row['area_hectare']:.0f} ha)<br>" +
+                                   f"Süre: {row['duration_days']} gün<br>" +
+                                   f"Şiddet: {row['severity']}",
+                        axis=1
+                    ),
+                    hovertemplate='%{text}<extra></extra>',
+                    name=f'{year} Yılı'
+                ))
+            
+            # Şehir merkezi
+            fig_hist_map.add_trace(go.Scattermapbox(
+                lat=[city_lat],
+                lon=[city_lon],
+                mode='markers',
+                marker=dict(
+                    size=20,
+                    color='blue',
+                    symbol='star',
+                    opacity=0.9
+                ),
+                text=[f"📍 {selected_hist_city} Merkez"],
+                hovertemplate='%{text}<extra></extra>',
+                name='Şehir Merkezi',
+                showlegend=True
+            ))
+            
+            fig_hist_map.update_layout(
+                mapbox=dict(
+                    style='open-street-map',
+                    center=dict(lat=city_lat, lon=city_lon),
+                    zoom=9
+                ),
+                height=600,
+                margin=dict(l=0, r=0, t=0, b=0),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            
+            st.plotly_chart(fig_hist_map, use_container_width=True)
+            
+            # Detaylı tablo
+            st.markdown("---")
+            st.subheader("📋 Detaylı Yangın Listesi")
+            
+            # Sıralama seçenekleri
+            col_sort1, col_sort2 = st.columns(2)
+            with col_sort1:
+                sort_by = st.selectbox("Sıralama:", ["Yıl (Azalan)", "Yıl (Artan)", "Alan (Büyükten Küçüğe)", "Alan (Küçükten Büyüğe)"])
+            with col_sort2:
+                show_years = st.multiselect("Yılları Filtrele:", sorted(city_data['year'].unique()), default=sorted(city_data['year'].unique()))
+            
+            # Filtrele ve sırala
+            filtered_data = city_data[city_data['year'].isin(show_years)].copy()
+            
+            if sort_by == "Yıl (Azalan)":
+                filtered_data = filtered_data.sort_values('year', ascending=False)
+            elif sort_by == "Yıl (Artan)":
+                filtered_data = filtered_data.sort_values('year', ascending=True)
+            elif sort_by == "Alan (Büyükten Küçüğe)":
+                filtered_data = filtered_data.sort_values('area_km2', ascending=False)
+            else:
+                filtered_data = filtered_data.sort_values('area_km2', ascending=True)
+            
+            # Tablo gösterimi
+            display_cols = ['year', 'month', 'description', 'area_km2', 'area_hectare', 'duration_days', 'severity']
+            display_data = filtered_data[display_cols].copy()
+            display_data.columns = ['Yıl', 'Ay', 'Açıklama', 'Alan (km²)', 'Alan (hektar)', 'Süre (gün)', 'Şiddet']
+            display_data['Ay'] = display_data['Ay'].apply(lambda x: month_names[x-1] if 1 <= x <= 12 else 'Bilinmiyor')
+            
+            st.dataframe(
+                display_data,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # İndirme butonu
+            csv = filtered_data.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 Verileri CSV Olarak İndir",
+                data=csv,
+                file_name=f"{selected_hist_city}_yangin_tarihcesi.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info(f"{selected_hist_city} için tarihsel yangın verisi bulunamadı.")
+    else:
+        st.warning("Tarihsel yangın verisi yüklenemedi. Veriler oluşturuluyor...")
+        st.info("İlk çalıştırmada örnek tarihsel veriler oluşturulacaktır.")
 
