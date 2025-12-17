@@ -78,7 +78,7 @@ else:
 
 # Groq AI client (OpenAI client kullanarak)
 groq_client = None
-groq_model = "llama-3.1-70b-versatile"  # veya "mixtral-8x7b-32768"
+groq_model = "llama-3.3-70b-versatile"  # Güncel model (llama-3.1-70b-versatile artık kullanılamıyor)
 
 if GROQ_AVAILABLE and GROQ_API_KEY:
     try:
@@ -99,14 +99,15 @@ if GROQ_AVAILABLE and GROQ_API_KEY:
                 model=groq_model,
                 messages=[{"role": "user", "content": "Test"}],
                 max_tokens=10,
-                timeout=10  # 10 saniye timeout
+                timeout=30  # 30 saniye timeout (artırıldı)
             )
             logger.info(f"✅ Groq AI test başarılı (model: {groq_model})")
-            logger.info(f"   Test yanıtı: {test_response.choices[0].message.content[:30]}...")
+            if test_response and test_response.choices:
+                logger.info(f"   Test yanıtı: {test_response.choices[0].message.content[:30]}...")
         except Exception as test_error:
             logger.warning(f"⚠️ Groq AI test çağrısı başarısız: {test_error}")
             logger.warning(f"   Ancak client oluşturuldu, runtime'da tekrar denenecek")
-            # Client oluşturuldu, test başarısız olsa bile kullanılabilir
+            # Test başarısız olsa bile client'ı None yapma, runtime'da tekrar denenecek
         
         logger.info(f"✅ Groq AI client oluşturuldu (model: {groq_model})")
         logger.info(f"   🚀 Groq AI kullanılacak (ücretsiz ve hızlı)")
@@ -630,6 +631,7 @@ Görevlerin:
             if not current_groq_client:
                 try:
                     logger.info("🔄 Groq client yok, yeniden oluşturuluyor...")
+                    logger.info(f"   API Key uzunluğu: {len(GROQ_API_KEY)}")
                     groq_client = OpenAI(
                         api_key=GROQ_API_KEY.strip(),
                         base_url="https://api.groq.com/openai/v1",
@@ -641,39 +643,69 @@ Görevlerin:
                     groq_client = None
                     current_groq_client = None
         
-        if GROQ_AVAILABLE and GROQ_API_KEY and current_groq_client:
-            try:
-                logger.info(f"🤖 Groq AI kullanılıyor (model: {groq_model})")
-                
-                # Web araması gerekiyorsa prompt'a ekle
-                if use_web_search:
-                    enhanced_prompt = full_prompt + "\n\nNot: Lütfen güncel web bilgilerini kullanarak yanıt ver. Eğer güncel bilgiye ihtiyaç varsa, bunu belirt."
-                    logger.info("🔍 Web araması için gelişmiş prompt kullanılıyor")
-                else:
-                    enhanced_prompt = full_prompt
-                
-                # OpenAI client kullanarak Groq'a istek gönder
-                response = current_groq_client.chat.completions.create(
-                    model=groq_model,
-                    messages=[
-                        {"role": "system", "content": "Sen bir yangın güvenliği ve risk analizi uzmanısın. Türkçe yanıt ver. Kısa, net ve anlaşılır yanıtlar ver. Emoji kullan (🔥, ⚠️, 🚨, 🌡️ vb.)."},
-                        {"role": "user", "content": enhanced_prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=1000,
-                    timeout=30  # 30 saniye timeout
-                )
-                ai_response = response.choices[0].message.content.strip()
-                model_used = f'groq-{groq_model}'
-                logger.info(f"✅ Groq AI yanıt üretti (uzunluk: {len(ai_response)} karakter)")
-            except Exception as groq_error:
-                error_msg = str(groq_error)
-                logger.error(f"❌ Groq AI hatası: {error_msg}")
-                logger.error(f"   Hata tipi: {type(groq_error).__name__}")
-                logger.error(f"   Detaylı hata:", exc_info=True)
-                # Hata durumunda client'ı sıfırla, bir sonraki istekte yeniden oluşturulsun
-                groq_client = None
-                ai_response = None
+        # Groq AI'yi kullan (retry mekanizması ile)
+        if GROQ_AVAILABLE and GROQ_API_KEY:
+            max_retries = 2
+            for retry in range(max_retries):
+                try:
+                    # Client yoksa veya None ise yeniden oluştur
+                    if not current_groq_client:
+                        logger.info(f"🔄 Groq client oluşturuluyor (retry {retry + 1}/{max_retries})...")
+                        groq_client = OpenAI(
+                            api_key=GROQ_API_KEY.strip(),
+                            base_url="https://api.groq.com/openai/v1",
+                        )
+                        current_groq_client = groq_client
+                        logger.info("✅ Groq client oluşturuldu")
+                    
+                    logger.info(f"🤖 Groq AI kullanılıyor (model: {groq_model}, retry: {retry + 1})")
+                    
+                    # Web araması gerekiyorsa prompt'a ekle
+                    if use_web_search:
+                        enhanced_prompt = full_prompt + "\n\nNot: Lütfen güncel web bilgilerini kullanarak yanıt ver. Eğer güncel bilgiye ihtiyaç varsa, bunu belirt."
+                        logger.info("🔍 Web araması için gelişmiş prompt kullanılıyor")
+                    else:
+                        enhanced_prompt = full_prompt
+                    
+                    # OpenAI client kullanarak Groq'a istek gönder
+                    response = current_groq_client.chat.completions.create(
+                        model=groq_model,
+                        messages=[
+                            {"role": "system", "content": "Sen bir yangın güvenliği ve risk analizi uzmanısın. Türkçe yanıt ver. Kısa, net ve anlaşılır yanıtlar ver. Emoji kullan (🔥, ⚠️, 🚨, 🌡️ vb.)."},
+                            {"role": "user", "content": enhanced_prompt}
+                        ],
+                        temperature=0.7,
+                        max_tokens=1000,
+                        timeout=60  # 60 saniye timeout (artırıldı)
+                    )
+                    
+                    if response and response.choices and len(response.choices) > 0:
+                        ai_response = response.choices[0].message.content.strip()
+                        if ai_response:
+                            model_used = f'groq-{groq_model}'
+                            logger.info(f"✅ Groq AI yanıt üretti (uzunluk: {len(ai_response)} karakter)")
+                            break  # Başarılı, döngüden çık
+                        else:
+                            logger.warning("⚠️ Groq AI boş yanıt döndü")
+                    else:
+                        logger.warning("⚠️ Groq AI geçersiz yanıt döndü")
+                        
+                except Exception as groq_error:
+                    error_msg = str(groq_error)
+                    logger.error(f"❌ Groq AI hatası (retry {retry + 1}/{max_retries}): {error_msg}")
+                    logger.error(f"   Hata tipi: {type(groq_error).__name__}")
+                    
+                    # Son deneme değilse client'ı sıfırla ve tekrar dene
+                    if retry < max_retries - 1:
+                        logger.info(f"🔄 Groq client sıfırlanıyor, tekrar denenecek...")
+                        groq_client = None
+                        current_groq_client = None
+                    else:
+                        # Son deneme başarısız, detaylı log
+                        logger.error(f"   Detaylı hata:", exc_info=True)
+                        groq_client = None
+                        current_groq_client = None
+                        ai_response = None
         
         # Kural tabanlı chatbot (fallback)
         if not ai_response:
