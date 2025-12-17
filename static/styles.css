@@ -1249,7 +1249,7 @@ footer p {
 
 /* PWA Install Banner (Mobil için - Üstte) */
 .pwa-install-banner {
-    display: none; /* JavaScript ile kontrol edilecek */
+    display: none; /* Desktop'ta gizli, mobilde JavaScript ile gösterilecek */ /* JavaScript ile kontrol edilecek */
     background: linear-gradient(135deg, #0056b3 0%, #007bff 100%);
     color: white;
     padding: 12px 16px;
@@ -1351,26 +1351,39 @@ footer p {
     opacity: 1;
 }
 
-/* Desktop'ta banner gizle */
+/* Desktop'ta banner kesinlikle gizle */
 @media (min-width: 769px) {
     .pwa-install-banner {
         display: none !important;
+        visibility: hidden !important;
     }
 }
 
-/* Mobilde banner'ın görünür olması için (JavaScript ile kontrol edilecek) */
+/* Mobilde banner görünür olabilir */
 @media (max-width: 768px) {
     .pwa-install-banner[style*="display: block"] {
         display: block !important;
+        visibility: visible !important;
     }
 }
 
-/* Mobilde banner göster */
+/* Mobilde banner göster - ZORUNLU */
 @media (max-width: 768px) {
     .pwa-install-banner {
         margin: 0 -20px 20px -20px;
         border-radius: 0;
         padding: 14px 16px;
+        /* Mobilde görünür olması için */
+        position: relative !important;
+        z-index: 99999 !important;
+    }
+    
+    /* JavaScript ile display: block yapıldığında kesinlikle görünsün */
+    .pwa-install-banner[style*="display: block"],
+    .pwa-install-banner[style*="display:block"] {
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
     }
     
     .pwa-banner-content {
