@@ -2551,40 +2551,89 @@ if ('serviceWorker' in navigator) {
     
     // Mobil cihaz tespiti
     function isMobileDevice() {
-        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
                (window.innerWidth <= 768);
+        console.log('isMobileDevice:', isMobile, 'UserAgent:', navigator.userAgent, 'Width:', window.innerWidth);
+        return isMobile;
     }
     
     // Standalone modda mı kontrol et (zaten yüklü mü)
     function isStandalone() {
-        return window.matchMedia('(display-mode: standalone)').matches || 
+        const standalone = window.matchMedia('(display-mode: standalone)').matches || 
                window.navigator.standalone || 
                document.referrer.includes('android-app://');
+        console.log('isStandalone:', standalone);
+        return standalone;
     }
     
     // PWA Install Banner göster (mobilde)
     function showPWAInstallBanner() {
         // Eğer zaten yüklüyse veya desktop'ta ise gösterme
         if (isStandalone() || !isMobileDevice()) {
+            console.log('PWA Banner: Standalone veya desktop, gösterilmiyor');
             return;
         }
         
         const banner = document.getElementById('pwa-install-banner');
-        if (banner && !pwaInstallBannerShown) {
-            banner.style.display = 'block';
-            pwaInstallBannerShown = true;
-            
-            // 7 gün boyunca gösterilmemesi için localStorage'a kaydet
-            const bannerDismissed = localStorage.getItem('pwa-banner-dismissed');
-            if (bannerDismissed) {
-                const dismissedDate = new Date(bannerDismissed);
-                const daysSinceDismissed = (new Date() - dismissedDate) / (1000 * 60 * 60 * 24);
-                if (daysSinceDismissed < 7) {
-                    banner.style.display = 'none';
-                    return;
-                }
+        if (!banner) {
+            console.log('PWA Banner: Banner elementi bulunamadı!');
+            return;
+        }
+        
+        // 7 gün boyunca gösterilmemesi için localStorage kontrolü
+        const bannerDismissed = localStorage.getItem('pwa-banner-dismissed');
+        if (bannerDismissed) {
+            const dismissedDate = new Date(bannerDismissed);
+            const daysSinceDismissed = (new Date() - dismissedDate) / (1000 * 60 * 60 * 24);
+            if (daysSinceDismissed < 7) {
+                console.log('PWA Banner: 7 gün içinde kapatılmış, gösterilmiyor');
+                banner.style.display = 'none';
+                return;
             }
         }
+        
+        // PWA zaten yüklü mü kontrol et
+        const pwaInstalled = localStorage.getItem('pwa-installed');
+        if (pwaInstalled === 'true') {
+            console.log('PWA Banner: PWA zaten yüklü, gösterilmiyor');
+            banner.style.display = 'none';
+            return;
+        }
+        
+        // Banner'ı göster
+        banner.style.display = 'block';
+        banner.style.visibility = 'visible';
+        banner.style.opacity = '1';
+        pwaInstallBannerShown = true;
+        console.log('PWA Banner: Banner gösterildi', {
+            display: banner.style.display,
+            visibility: banner.style.visibility,
+            opacity: banner.style.opacity
+        });
+        
+        // Banner'ın gerçekten görünür olduğunu kontrol et
+        setTimeout(() => {
+            const computedStyle = window.getComputedStyle(banner);
+            const isVisible = computedStyle.display !== 'none' && computedStyle.visibility !== 'hidden';
+            console.log('PWA Banner görünürlük kontrolü:', {
+                display: computedStyle.display,
+                visibility: computedStyle.visibility,
+                opacity: computedStyle.opacity,
+                isVisible: isVisible,
+                bannerExists: !!banner,
+                bannerOffsetHeight: banner.offsetHeight,
+                bannerOffsetWidth: banner.offsetWidth
+            });
+            
+            if (!isVisible || banner.offsetHeight === 0) {
+                console.warn('PWA Banner: Banner hala görünmüyor, zorla gösteriliyor');
+                banner.style.setProperty('display', 'block', 'important');
+                banner.style.setProperty('visibility', 'visible', 'important');
+                banner.style.setProperty('opacity', '1', 'important');
+                banner.style.setProperty('position', 'relative', 'important');
+                banner.style.setProperty('z-index', '9999', 'important');
+            }
+        }, 100);
     }
     
     // PWA Install Banner gizle
@@ -2597,12 +2646,14 @@ if ('serviceWorker' in navigator) {
     
     // beforeinstallprompt event'i (Chrome, Edge, Samsung Internet)
     window.addEventListener('beforeinstallprompt', (e) => {
+        console.log('beforeinstallprompt event tetiklendi');
         // Varsayılan prompt'u engelle
         e.preventDefault();
         deferredPrompt = e;
         
         // Mobilde banner göster
         if (isMobileDevice() && !isStandalone()) {
+            console.log('beforeinstallprompt: Banner gösteriliyor');
             showPWAInstallBanner();
         }
     });
@@ -2655,20 +2706,70 @@ if ('serviceWorker' in navigator) {
     }
     
     // Sayfa yüklendiğinde mobilde banner göster (eğer yüklü değilse)
-    if (isMobileDevice() && !isStandalone()) {
-        // Kısa bir gecikme ile banner göster (sayfa yüklendikten sonra)
-        setTimeout(() => {
-            // iOS Safari için özel kontrol
-            const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-            const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS/i.test(navigator.userAgent);
+    // DOMContentLoaded sonrası kontrol et
+    function initPWAInstallBanner() {
+        console.log('initPWAInstallBanner: PWA Banner kontrolü başlatılıyor');
+        console.log('User Agent:', navigator.userAgent);
+        console.log('Window Width:', window.innerWidth);
+        
+        const isMobile = isMobileDevice();
+        const isStandaloneMode = isStandalone();
+        
+        console.log('Mobil:', isMobile, 'Standalone:', isStandaloneMode);
+        
+        if (isMobile && !isStandaloneMode) {
+            console.log('PWA Banner: Mobil cihaz tespit edildi, banner gösterilecek');
             
-            // Eğer beforeinstallprompt gelmediyse bile mobilde göster
-            // iOS Safari'de beforeinstallprompt gelmez, bu yüzden her zaman göster
-            if (!deferredPrompt || (isIOS && isSafari)) {
-                showPWAInstallBanner();
-            }
-        }, 2000);
+            // Kısa bir gecikme ile banner göster (sayfa yüklendikten sonra)
+            setTimeout(() => {
+                // iOS Safari için özel kontrol
+                const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+                const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS/i.test(navigator.userAgent);
+                
+                console.log('PWA Banner: iOS:', isIOS, 'Safari:', isSafari, 'deferredPrompt:', !!deferredPrompt);
+                
+                // Eğer beforeinstallprompt gelmediyse bile mobilde göster
+                // iOS Safari'de beforeinstallprompt gelmez, bu yüzden her zaman göster
+                if (!deferredPrompt || (isIOS && isSafari)) {
+                    console.log('PWA Banner: Banner gösteriliyor...');
+                    showPWAInstallBanner();
+                } else {
+                    console.log('PWA Banner: deferredPrompt var, beforeinstallprompt event bekleniyor');
+                }
+            }, 1000);
+        } else {
+            console.log('PWA Banner: Desktop veya standalone mod, banner gösterilmeyecek');
+        }
     }
+    
+    // DOMContentLoaded event'i
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initPWAInstallBanner);
+    } else {
+        // DOM zaten yüklü
+        initPWAInstallBanner();
+    }
+    
+    // window.onload ile de kontrol et (DOMContentLoaded yeterli olmayabilir)
+    window.addEventListener('load', function() {
+        console.log('window.load: PWA Banner kontrolü');
+        if (isMobileDevice() && !isStandalone()) {
+            setTimeout(() => {
+                const banner = document.getElementById('pwa-install-banner');
+                const computedStyle = window.getComputedStyle(banner);
+                console.log('window.load: Banner durumu:', {
+                    display: computedStyle.display,
+                    visibility: computedStyle.visibility,
+                    offsetHeight: banner ? banner.offsetHeight : 0
+                });
+                
+                if (banner && (computedStyle.display === 'none' || banner.offsetHeight === 0)) {
+                    console.log('window.load: Banner hala gizli, tekrar gösteriliyor');
+                    showPWAInstallBanner();
+                }
+            }, 3000);
+        }
+    });
     
     // iOS Safari için özel yükleme butonu davranışı (DOMContentLoaded sonrası)
     setTimeout(() => {
