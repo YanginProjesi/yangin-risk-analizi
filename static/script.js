@@ -2545,83 +2545,153 @@ if ('serviceWorker' in navigator) {
             });
     });
     
-    // Install prompt (PWA yükleme butonu)
+    // PWA Install Prompt (Mobil için)
     let deferredPrompt;
+    let pwaInstallBannerShown = false;
+    
+    // Mobil cihaz tespiti
+    function isMobileDevice() {
+        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
+               (window.innerWidth <= 768);
+    }
+    
+    // Standalone modda mı kontrol et (zaten yüklü mü)
+    function isStandalone() {
+        return window.matchMedia('(display-mode: standalone)').matches || 
+               window.navigator.standalone || 
+               document.referrer.includes('android-app://');
+    }
+    
+    // PWA Install Banner göster (mobilde)
+    function showPWAInstallBanner() {
+        // Eğer zaten yüklüyse veya desktop'ta ise gösterme
+        if (isStandalone() || !isMobileDevice()) {
+            return;
+        }
+        
+        const banner = document.getElementById('pwa-install-banner');
+        if (banner && !pwaInstallBannerShown) {
+            banner.style.display = 'block';
+            pwaInstallBannerShown = true;
+            
+            // 7 gün boyunca gösterilmemesi için localStorage'a kaydet
+            const bannerDismissed = localStorage.getItem('pwa-banner-dismissed');
+            if (bannerDismissed) {
+                const dismissedDate = new Date(bannerDismissed);
+                const daysSinceDismissed = (new Date() - dismissedDate) / (1000 * 60 * 60 * 24);
+                if (daysSinceDismissed < 7) {
+                    banner.style.display = 'none';
+                    return;
+                }
+            }
+        }
+    }
+    
+    // PWA Install Banner gizle
+    function hidePWAInstallBanner() {
+        const banner = document.getElementById('pwa-install-banner');
+        if (banner) {
+            banner.style.display = 'none';
+        }
+    }
+    
+    // beforeinstallprompt event'i (Chrome, Edge, Samsung Internet)
     window.addEventListener('beforeinstallprompt', (e) => {
         // Varsayılan prompt'u engelle
         e.preventDefault();
         deferredPrompt = e;
         
-        // Özel yükleme butonu göster
-        showInstallButton();
+        // Mobilde banner göster
+        if (isMobileDevice() && !isStandalone()) {
+            showPWAInstallBanner();
+        }
     });
     
-    // PWA yüklendiğinde butonu gizle
+    // PWA yüklendiğinde banner'ı gizle
     window.addEventListener('appinstalled', () => {
         console.log('✅ PWA yüklendi!');
-        hideInstallButton();
+        hidePWAInstallBanner();
         deferredPrompt = null;
+        localStorage.setItem('pwa-installed', 'true');
     });
-}
-
-// PWA Yükleme Butonu
-function showInstallButton() {
-    // Mevcut buton varsa çık
-    if (document.getElementById('pwa-install-btn')) return;
     
-    const installBtn = document.createElement('button');
-    installBtn.id = 'pwa-install-btn';
-    installBtn.innerHTML = '📱 Uygulamayı Yükle';
-    installBtn.className = 'pwa-install-button';
-    installBtn.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: #ff6b6b;
-        color: white;
-        border: none;
-        padding: 12px 24px;
-        border-radius: 25px;
-        font-size: 14px;
-        font-weight: bold;
-        cursor: pointer;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        z-index: 10000;
-        transition: all 0.3s ease;
-    `;
-    
-    installBtn.addEventListener('click', async () => {
-        if (!deferredPrompt) return;
+    // Banner yükleme butonu (Android/Chrome için)
+    const installBannerBtn = document.getElementById('pwa-install-banner-btn');
+    if (installBannerBtn) {
+        // iOS Safari kontrolü
+        const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+        const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS/i.test(navigator.userAgent);
         
-        // Prompt'u göster
-        deferredPrompt.prompt();
-        const { outcome } = await deferredPrompt.userChoice;
-        
-        console.log(`Kullanıcı seçimi: ${outcome}`);
-        deferredPrompt = null;
-        hideInstallButton();
-    });
-    
-    installBtn.addEventListener('mouseenter', () => {
-        installBtn.style.transform = 'scale(1.05)';
-        installBtn.style.boxShadow = '0 6px 16px rgba(0,0,0,0.4)';
-    });
-    
-    installBtn.addEventListener('mouseleave', () => {
-        installBtn.style.transform = 'scale(1)';
-        installBtn.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
-    });
-    
-    document.body.appendChild(installBtn);
-}
-
-function hideInstallButton() {
-    const btn = document.getElementById('pwa-install-btn');
-    if (btn) {
-        btn.style.opacity = '0';
-        btn.style.transform = 'translateY(20px)';
-        setTimeout(() => btn.remove(), 300);
+        if (!isIOS || !isSafari) {
+            // Android/Chrome için normal davranış
+            installBannerBtn.addEventListener('click', async () => {
+                if (deferredPrompt) {
+                    // Prompt'u göster
+                    deferredPrompt.prompt();
+                    const { outcome } = await deferredPrompt.userChoice;
+                    
+                    console.log(`Kullanıcı seçimi: ${outcome}`);
+                    if (outcome === 'accepted') {
+                        console.log('✅ Kullanıcı PWA yüklemeyi kabul etti');
+                    }
+                    deferredPrompt = null;
+                    hidePWAInstallBanner();
+                } else {
+                    // Fallback: Diğer tarayıcılar için
+                    alert('Tarayıcınızın menüsünden "Ana ekrana ekle" veya "Yükle" seçeneğini kullanın.');
+                }
+            });
+        }
     }
+    
+    // Banner kapatma butonu
+    const installBannerClose = document.getElementById('pwa-install-banner-close');
+    if (installBannerClose) {
+        installBannerClose.addEventListener('click', () => {
+            hidePWAInstallBanner();
+            // 7 gün boyunca tekrar gösterme
+            localStorage.setItem('pwa-banner-dismissed', new Date().toISOString());
+        });
+    }
+    
+    // Sayfa yüklendiğinde mobilde banner göster (eğer yüklü değilse)
+    if (isMobileDevice() && !isStandalone()) {
+        // Kısa bir gecikme ile banner göster (sayfa yüklendikten sonra)
+        setTimeout(() => {
+            // iOS Safari için özel kontrol
+            const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+            const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS/i.test(navigator.userAgent);
+            
+            // Eğer beforeinstallprompt gelmediyse bile mobilde göster
+            // iOS Safari'de beforeinstallprompt gelmez, bu yüzden her zaman göster
+            if (!deferredPrompt || (isIOS && isSafari)) {
+                showPWAInstallBanner();
+            }
+        }, 2000);
+    }
+    
+    // iOS Safari için özel yükleme butonu davranışı (DOMContentLoaded sonrası)
+    setTimeout(() => {
+        const installBannerBtn = document.getElementById('pwa-install-banner-btn');
+        if (installBannerBtn) {
+            const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+            const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS/i.test(navigator.userAgent);
+            
+            if (isIOS && isSafari) {
+                // iOS Safari için buton metnini güncelle
+                installBannerBtn.textContent = 'Nasıl Yüklenir?';
+                // Mevcut event listener'ı kaldır
+                const newBtn = installBannerBtn.cloneNode(true);
+                installBannerBtn.parentNode.replaceChild(newBtn, installBannerBtn);
+                
+                // Yeni event listener ekle
+                document.getElementById('pwa-install-banner-btn').addEventListener('click', function(e) {
+                    e.preventDefault();
+                    alert('iOS\'ta yüklemek için:\n\n1. Safari\'nin alt kısmındaki paylaş butonuna (⬆️) tıklayın\n2. "Ana Ekrana Ekle" seçeneğini seçin\n3. "Ekle" butonuna tıklayın\n\nUygulama ana ekranınıza eklenecektir.');
+                });
+            }
+        }
+    }, 100);
 }
 
 // ==================== AI Chatbot Functions ====================
