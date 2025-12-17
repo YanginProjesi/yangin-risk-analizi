@@ -2653,17 +2653,37 @@ if ('serviceWorker' in navigator) {
         localStorage.setItem('pwa-installed', 'true');
     });
     
-    // Banner yükleme butonu (Android/Chrome için)
-    const installBannerBtn = document.getElementById('pwa-install-banner-btn');
-    if (installBannerBtn) {
+    // Banner yükleme butonu event listener'ı (DOM yüklendikten sonra ekle)
+    function setupInstallButton() {
+        const installBannerBtn = document.getElementById('pwa-install-banner-btn');
+        if (!installBannerBtn) {
+            console.warn('PWA Install Banner butonu bulunamadı');
+            return;
+        }
+        
         // iOS Safari kontrolü
         const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
         const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS/i.test(navigator.userAgent);
         
-        if (!isIOS || !isSafari) {
-            // Android/Chrome için normal davranış
-            installBannerBtn.addEventListener('click', async () => {
-                if (deferredPrompt) {
+        if (isIOS && isSafari) {
+            // iOS Safari için özel davranış (ayrı handler var)
+            return;
+        }
+        
+        // Mevcut event listener'ları kaldır (tekrar eklenmemesi için)
+        const newBtn = installBannerBtn.cloneNode(true);
+        installBannerBtn.parentNode.replaceChild(newBtn, installBannerBtn);
+        
+        // Yeni butona event listener ekle
+        const freshBtn = document.getElementById('pwa-install-banner-btn');
+        freshBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            console.log('PWA Install butonu tıklandı');
+            
+            if (deferredPrompt) {
+                try {
                     // Prompt'u göster
                     deferredPrompt.prompt();
                     const { outcome } = await deferredPrompt.userChoice;
@@ -2674,12 +2694,17 @@ if ('serviceWorker' in navigator) {
                     }
                     deferredPrompt = null;
                     hidePWAInstallBanner();
-                } else {
-                    // Fallback: Diğer tarayıcılar için
-                    alert('Tarayıcınızın menüsünden "Ana ekrana ekle" veya "Yükle" seçeneğini kullanın.');
+                } catch (error) {
+                    console.error('PWA install prompt hatası:', error);
+                    alert('Yükleme işlemi başlatılamadı. Lütfen tarayıcınızın menüsünden "Ana ekrana ekle" seçeneğini kullanın.');
                 }
-            });
-        }
+            } else {
+                // Fallback: Diğer tarayıcılar için
+                alert('Tarayıcınızın menüsünden "Ana ekrana ekle" veya "Yükle" seçeneğini kullanın.\n\nChrome: Menü (⋮) → "Ana ekrana ekle"\nSafari: Paylaş (⬆️) → "Ana Ekrana Ekle"');
+            }
+        });
+        
+        console.log('✅ PWA Install butonu event listener eklendi');
     }
     
     // Banner kapatma butonu (sadece geçici olarak gizle, tekrar göster)
@@ -2692,6 +2717,12 @@ if ('serviceWorker' in navigator) {
         });
     }
     
+    // Buton event listener'larını ayarla (DOM yüklendikten sonra)
+    function setupBannerButtons() {
+        setupInstallButton(); // Android/Chrome için
+        setupIOSInstallButton(); // iOS Safari için
+    }
+    
     // Sayfa yüklendiğinde mobilde banner göster
     function initPWAInstallBanner() {
         // Mobil kontrolü
@@ -2699,14 +2730,21 @@ if ('serviceWorker' in navigator) {
             // Banner'ı göster (hemen)
             showPWAInstallBanner();
             
+            // Butonları ayarla
+            setTimeout(() => {
+                setupBannerButtons();
+            }, 100);
+            
             // Tekrar dene (gecikme ile)
             setTimeout(() => {
                 showPWAInstallBanner();
+                setupBannerButtons();
             }, 500);
             
             // Bir daha dene (daha uzun gecikme ile)
             setTimeout(() => {
                 showPWAInstallBanner();
+                setupBannerButtons();
             }, 2000);
         }
     }
@@ -2723,6 +2761,7 @@ if ('serviceWorker' in navigator) {
         if (isMobileDevice() && !isStandalone()) {
             setTimeout(() => {
                 showPWAInstallBanner();
+                setupBannerButtons();
             }, 1000);
         }
     });
@@ -2732,32 +2771,41 @@ if ('serviceWorker' in navigator) {
         if (isMobileDevice() && !isStandalone()) {
             setTimeout(() => {
                 showPWAInstallBanner();
+                setupBannerButtons();
             }, 100);
         }
     });
     
-    // iOS Safari için özel yükleme butonu davranışı (DOMContentLoaded sonrası)
-    setTimeout(() => {
+    // iOS Safari için özel yükleme butonu davranışı
+    function setupIOSInstallButton() {
         const installBannerBtn = document.getElementById('pwa-install-banner-btn');
-        if (installBannerBtn) {
-            const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-            const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS/i.test(navigator.userAgent);
-            
-            if (isIOS && isSafari) {
-                // iOS Safari için buton metnini güncelle
-                installBannerBtn.textContent = 'Nasıl Yüklenir?';
-                // Mevcut event listener'ı kaldır
-                const newBtn = installBannerBtn.cloneNode(true);
-                installBannerBtn.parentNode.replaceChild(newBtn, installBannerBtn);
-                
-                // Yeni event listener ekle
-                document.getElementById('pwa-install-banner-btn').addEventListener('click', function(e) {
-                    e.preventDefault();
-                    alert('iOS\'ta yüklemek için:\n\n1. Safari\'nin alt kısmındaki paylaş butonuna (⬆️) tıklayın\n2. "Ana Ekrana Ekle" seçeneğini seçin\n3. "Ekle" butonuna tıklayın\n\nUygulama ana ekranınıza eklenecektir.');
-                });
-            }
+        if (!installBannerBtn) {
+            return;
         }
-    }, 100);
+        
+        const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+        const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|CriOS|FxiOS/i.test(navigator.userAgent);
+        
+        if (isIOS && isSafari) {
+            // iOS Safari için buton metnini güncelle
+            installBannerBtn.textContent = 'Nasıl Yüklenir?';
+            
+            // Mevcut event listener'ları kaldır
+            const newBtn = installBannerBtn.cloneNode(true);
+            installBannerBtn.parentNode.replaceChild(newBtn, installBannerBtn);
+            
+            // Yeni event listener ekle
+            const freshBtn = document.getElementById('pwa-install-banner-btn');
+            freshBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                alert('iOS\'ta yüklemek için:\n\n1. Safari\'nin alt kısmındaki paylaş butonuna (⬆️) tıklayın\n2. "Ana Ekrana Ekle" seçeneğini seçin\n3. "Ekle" butonuna tıklayın\n\nUygulama ana ekranınıza eklenecektir.');
+            });
+            
+            console.log('✅ iOS Safari install butonu ayarlandı');
+        }
+    }
+    
 }
 
 // ==================== AI Chatbot Functions ====================
