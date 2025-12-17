@@ -1249,7 +1249,7 @@ footer p {
 
 /* PWA Install Banner (Mobil için - Üstte) */
 .pwa-install-banner {
-    display: none;
+    display: none; /* JavaScript ile kontrol edilecek */
     background: linear-gradient(135deg, #0056b3 0%, #007bff 100%);
     color: white;
     padding: 12px 16px;
@@ -1355,6 +1355,13 @@ footer p {
 @media (min-width: 769px) {
     .pwa-install-banner {
         display: none !important;
+    }
+}
+
+/* Mobilde banner'ın görünür olması için (JavaScript ile kontrol edilecek) */
+@media (max-width: 768px) {
+    .pwa-install-banner[style*="display: block"] {
+        display: block !important;
     }
 }
 
