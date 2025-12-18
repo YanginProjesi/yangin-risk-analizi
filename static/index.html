@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="description" content="TÜBİTAK Projesi - Türkiye Yangın Tespit ve Kontrol Merkezi">
     <meta name="theme-color" content="#0056b3">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="apple-mobile-web-app-title" content="Yangın Risk">
@@ -20,6 +21,60 @@
     <link rel="icon" type="image/png" sizes="512x512" href="https://yangin-risk-analizi.onrender.com/icon-512.png">
     
     <link rel="stylesheet" href="styles.css">
+    <!-- Leaflet.js CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" 
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" 
+          crossorigin=""/>
+    <!-- Leaflet.js JavaScript -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" 
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" 
+            crossorigin=""></script>
+    <!-- Leaflet Routing Machine CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <!-- Leaflet Routing Machine JavaScript -->
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+    <style>
+        #dashboardMap {
+            height: 400px;
+            width: 100%;
+            border-radius: 10px;
+            margin-top: 10px;
+        }
+        .address-search-container {
+            margin-bottom: 10px;
+            position: relative;
+        }
+        .address-search-input {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            font-size: 0.9em;
+            margin-bottom: 8px;
+        }
+        /* Custom route markers */
+        .custom-route-marker {
+            background: transparent !important;
+            border: none !important;
+        }
+        }
+        .risk-info-box {
+            background: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+        .risk-info-box h4 {
+            margin: 0 0 8px 0;
+            color: #333;
+        }
+        .risk-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -42,7 +97,7 @@
         </div>
 
         <nav class="tabs">
-            <button class="tab-btn active" data-tab="dashboard">📊 İzleme Panosu</button>
+            <button class="tab-btn active" data-tab="dashboard">📊 İzleme Panosu (Şehir Yangınları)</button>
             <button class="tab-btn" data-tab="map">🗺️ Harita</button>
             <button class="tab-btn" data-tab="simulation">🎮 Yangın Simülasyonu</button>
             <button class="tab-btn" data-tab="history">📊 Yangın Tarihçesi</button>
@@ -84,9 +139,40 @@
                     <div class="sensor-status" id="riskStatus">Güvenli</div>
                 </div>
 
-                <div class="sensor-card" style="max-height: none; min-height: auto;">
-                    <h3>📍 Konum</h3>
-                    <select id="citySelect" class="city-select" onchange="changeCity()" style="font-size: 0.9em; padding: 8px; margin-bottom: 10px;">
+                <div class="sensor-card">
+                    <h3>📍 Konum ve Yangın Riski</h3>
+                    <div class="address-search-container">
+                        <input type="text" id="addressSearch" class="address-search-input" placeholder="🔍 Adres ara (örn: Ankara Kızılay, İstanbul Kadıköy, İzmir Konak)..." autocomplete="off" />
+                        <div style="font-size: 0.8em; color: #666; margin-top: 5px;">
+                            💡 Şehir ve mahalle adı yazın (örn: "Ankara Kızılay"). Haritaya tıklayarak da konum seçebilirsiniz.
+                        </div>
+                    </div>
+                    <div id="locationInfo" style="font-size: 0.85em; margin-top: 10px; padding: 8px; background: #f0f0f0; border-radius: 5px;">
+                        <div><strong>Konum:</strong> <span id="location">Ankara</span></div>
+                        <div id="coordinates" style="margin-top: 5px; color: #666;">Koordinat: 39.9334°K, 32.8597°D</div>
+                        <div id="address" style="margin-top: 5px; color: #666; font-size: 0.9em;"></div>
+                        <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button onclick="getCurrentLocationGPS()" class="btn" style="padding: 6px 12px; font-size: 0.85em;">
+                                📍 GPS Konum Al
+                            </button>
+                            <button onclick="getCurrentLocationForDirections()" class="btn" style="padding: 6px 12px; font-size: 0.85em;">
+                                🗺️ Buraya Yol Tarifi Al
+                            </button>
+                            <button onclick="openInPhoneMapApp()" class="btn" style="padding: 6px 12px; font-size: 0.85em; background: #28a745;">
+                                📱 Telefon Haritasında Aç
+                            </button>
+                            <button onclick="clearDirections()" class="btn" style="padding: 6px 12px; font-size: 0.85em; background: #6c757d;">
+                                Yol Tarifini Temizle
+                            </button>
+                        </div>
+                    </div>
+                    <div id="riskInfoBox" class="risk-info-box" style="display: none;">
+                        <h4>🔥 Yangın Riski Analizi</h4>
+                        <div class="risk-value" id="riskValue">-</div>
+                        <div id="riskLevel" style="margin-top: 5px;"></div>
+                        <div id="riskDetails" style="margin-top: 5px; font-size: 0.9em; color: #666;"></div>
+                    </div>
+                    <select id="citySelect" class="city-select" onchange="changeCity()" style="font-size: 0.9em; padding: 8px; margin-top: 10px;">
                         <option value="turkiye">Türkiye Genel</option>
                         <option value="adana">Adana</option>
                         <option value="adiyaman">Adıyaman</option>
@@ -170,22 +256,53 @@
                         <option value="yozgat">Yozgat</option>
                         <option value="zonguldak">Zonguldak</option>
                     </select>
-                    <div class="sensor-value" id="location">Ankara</div>
-                    <div class="sensor-status" id="activeMonitoring">Ankara - Aktif İzleme</div>
-                    <button class="btn" onclick="simulateFire()">🧪 Test Simülasyonu</button>
+                    <button class="btn" onclick="simulateFire()" style="margin-top: 10px;">🧪 Test Simülasyonu</button>
                 </div>
             </div>
-
-            <div class="chart-container">
-                <h2>Zaman Serisi Grafiği</h2>
-                <canvas id="timeSeriesChart"></canvas>
+            
+            <!-- Harita - Sensör kartlarının altında -->
+            <div style="margin-top: 20px; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); width: 70%; max-width: 900px;">
+                <h3 style="margin-bottom: 15px;">🗺️ Konum Haritası</h3>
+                <div id="dashboardMap" style="width: 100%; height: 400px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);"></div>
             </div>
+
         </div>
 
         <!-- Map Tab -->
         <div id="map" class="tab-content">
             <div class="map-controls">
-                <h2>🗺️ 3D Yangın Risk Haritası - NASA FIRMS Stili</h2>
+                <h2>🗺️ 3D Yangın Haritası</h2>
+                <div class="map-mode-selector" style="margin-bottom: 15px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
+                    <label style="font-weight: bold; margin-right: 10px;">Harita Modu:</label>
+                    <label style="margin-right: 15px;">
+                        <input type="radio" name="mapMode" value="fires" checked onchange="changeMapMode()">
+                        🔥 Aktif Yangınlar (NASA FIRMS)
+                    </label>
+                    <label>
+                        <input type="radio" name="mapMode" value="risk" onchange="changeMapMode()">
+                        ⚠️ Yangın Riski Tahmini (ML Model)
+                    </label>
+                </div>
+                <p id="mapModeDescription" style="background: #fff3cd; padding: 10px; border-radius: 5px; margin-bottom: 15px;">
+                    <strong>⚠️ Önemli:</strong> Bu haritada gösterilen tüm noktalar <strong>gerçek yangınlardır</strong> (NASA FIRMS uydu tespiti). 
+                    "Kritik Şiddet" etiketi yangının şiddetini gösterir - daha büyük ve şiddetli yangınlar kritik şiddet olarak işaretlenir.
+                    <br><strong>💡 İpucu:</strong> Haritadaki yangın noktalarına tıklayarak detaylı bilgi görebilirsiniz.
+                </p>
+                <div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #2196F3;">
+                    <label style="display: flex; align-items: center; cursor: pointer; margin-bottom: 8px;">
+                        <input type="checkbox" id="fireNotificationToggle" checked onchange="toggleFireNotifications()" style="margin-right: 8px;">
+                        <strong>🔔 Yeni Yangın Bildirimleri:</strong> Yeni yangın tespit edildiğinde bildirim al (Tarayıcı bildirimi + Ses uyarısı)
+                    </label>
+                    <button onclick="requestNotificationPermission()" class="btn" style="font-size: 0.85em; padding: 6px 12px;">
+                        🔔 Bildirim İzni İste
+                    </button>
+                    <div style="font-size: 0.85em; color: #666; margin-top: 8px;">
+                        <strong>📋 Nasıl Çalışır?</strong><br>
+                        • Sistem her 5 dakikada bir NASA FIRMS verilerini kontrol eder<br>
+                        • Yeni yangın tespit edildiğinde: <strong>Banner uyarısı</strong> + <strong>Ses uyarısı</strong> + <strong>Tarayıcı bildirimi</strong> gösterilir<br>
+                        • Banner'a tıklayarak haritada yangını görebilirsiniz
+                    </div>
+                </div>
                 <div class="map-controls-row">
                     <div class="city-selector-map">
                         <label for="mapCitySelect">📍 Şehir Seçin:</label>
@@ -289,22 +406,71 @@
                             3D Görünüm
                         </label>
                     </div>
+                    <div class="refresh-controls">
+                        <button class="btn" onclick="refreshFireData()" style="margin-left: 10px;">
+                            🔄 Verileri Yenile
+                        </button>
+                    </div>
+                </div>
+                <div id="fireDataUpdateInfo" style="margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.9); border-radius: 5px; font-size: 0.9em;">
+                    🔄 Veriler yükleniyor...
                 </div>
             </div>
             <div id="mapContainer" style="height: 700px; width: 100%; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);"></div>
             <div class="map-legend">
-                <h3>Risk Seviyeleri:</h3>
-                <div class="legend-item"><span class="legend-color low"></span> Düşük Risk</div>
-                <div class="legend-item"><span class="legend-color medium"></span> Orta Risk</div>
-                <div class="legend-item"><span class="legend-color high"></span> Yüksek Risk</div>
-                <div class="legend-item"><span class="legend-color critical"></span> Kritik Risk</div>
+                <h3 id="legendTitle">Yangın Şiddet Seviyeleri:</h3>
+                <div class="legend-item"><span class="legend-color low"></span> <span id="legendLow">Düşük Şiddet</span></div>
+                <div class="legend-item"><span class="legend-color medium"></span> <span id="legendMedium">Orta Şiddet</span></div>
+                <div class="legend-item"><span class="legend-color high"></span> <span id="legendHigh">Yüksek Şiddet</span></div>
+                <div class="legend-item"><span class="legend-color critical"></span> <span id="legendCritical">Kritik Şiddet</span></div>
+            </div>
+        </div>
+
+        <!-- Yangın Detay Modal -->
+        <div id="fireDetailModal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 600px;">
+                <span class="modal-close" onclick="closeFireDetailModal()">&times;</span>
+                <h2>🔥 Yangın Detayları</h2>
+                <div id="fireDetailContent">
+                    <!-- Detaylar buraya yüklenecek -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Yeni Yangın Uyarı Banner -->
+        <div id="newFireAlertBanner" class="new-fire-alert" style="display: none;">
+            <div class="alert-content">
+                <div class="alert-icon">🚨</div>
+                <div class="alert-text">
+                    <strong>YENİ YANGIN TESPİT EDİLDİ!</strong>
+                    <div id="newFireAlertDetails"></div>
+                </div>
+                <button class="alert-close" onclick="closeNewFireAlert()">×</button>
             </div>
         </div>
 
         <!-- Simulation Tab -->
         <div id="simulation" class="tab-content">
-            <h2>🎮 Yangın Simülasyonu - Örnek Senaryo</h2>
-            <p class="subtitle">Bu simülasyon, sistemin yangın anında nasıl çalıştığını gösterir.</p>
+            <h2>🎮 Yangın Simülasyonu - Orman Yangını Senaryosu</h2>
+            <p class="subtitle">Bu simülasyon, <strong>orman yangını tespit edildiğinde</strong> sistemin nasıl çalıştığını ve yangının zaman içinde nasıl büyüdüğünü gösterir.</p>
+            <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #ff9800;">
+                <strong>📋 Simülasyon Ne Gösteriyor?</strong>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li><strong>Yanan Alan:</strong> Yangının kapladığı alan (km²) - zamanla büyür</li>
+                    <li><strong>Yayılma Hızı:</strong> Yangının saatte kaç km yayıldığı - rüzgar ve sıcaklığa göre değişir</li>
+                    <li><strong>Yayılma Yönü:</strong> Yangının hangi yöne doğru ilerlediği</li>
+                    <li><strong>Harita Görünümü:</strong> Yangın merkezi ve yanan alanın haritada gösterimi</li>
+                    <li><strong>Otomatik Uyarılar:</strong> Belirli zamanlarda kritik uyarılar (5 dk, 15 dk, 30 dk, 60 dk)</li>
+                    <li><strong>SMS Bildirimi:</strong> Yangın tespit edildiğinde otomatik SMS gönderimi</li>
+                </ul>
+                <strong>🔴 Gerçek Durumda Bu Ekranı Ne Zaman Görürsünüz?</strong>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li><strong>Orman Yangını Tespit Edildiğinde:</strong> Uydu, sensör veya gözlemci tarafından yangın tespit edildiğinde</li>
+                    <li><strong>Yangın İzleme Merkezlerinde:</strong> AFAD, Orman Genel Müdürlüğü, İtfaiye komuta merkezlerinde</li>
+                    <li><strong>Acil Durum Yönetim Sistemlerinde:</strong> Yangın müdahale ekiplerinin komuta merkezlerinde</li>
+                    <li><strong>Gerçek Zamanlı İzleme:</strong> Yangın başladıktan sonra sürekli güncellenen verilerle</li>
+                </ul>
+            </div>
             <div class="sms-notice" style="background: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #2196F3;">
                 <strong>📱 SMS Bildirimi:</strong> Simülasyon başlatıldığında otomatik olarak SMS gönderilir.
                 <br><br>
@@ -326,12 +492,33 @@
 
             <div class="simulation-info">
                 <div class="sim-scenario">
-                    <h3>📋 Senaryo: Antalya - Manavgat Orman Yangını</h3>
+                    <h3>📋 Senaryo: Yangın Simülasyonu</h3>
+                    <div style="margin-bottom: 15px;">
+                        <button id="getSimLocationBtn" class="btn" onclick="getSimulationLocation()" style="width: 100%; margin-bottom: 8px; font-size: 0.9em; padding: 8px;">
+                            📍 GPS ile Konum Al
+                        </button>
+                        <button id="manualSimLocationBtn" class="btn" onclick="toggleManualSimLocation()" style="width: 100%; margin-bottom: 8px; font-size: 0.9em; padding: 8px; background: #6c757d;">
+                            📝 Manuel Koordinat Gir
+                        </button>
+                    </div>
+                    <div id="manualSimLocationInput" style="display: none; margin-bottom: 10px;">
+                        <input type="number" id="manualSimLat" placeholder="Enlem (Lat)" step="0.0001" value="36.8" style="width: 48%; padding: 6px; margin-right: 2%; font-size: 0.85em; border: 1px solid #ddd; border-radius: 4px;">
+                        <input type="number" id="manualSimLon" placeholder="Boylam (Lon)" step="0.0001" value="31.4" style="width: 48%; padding: 6px; font-size: 0.85em; border: 1px solid #ddd; border-radius: 4px;">
+                        <button onclick="setManualSimLocation()" class="btn" style="width: 100%; margin-top: 5px; font-size: 0.85em; padding: 6px;">
+                            Konumu Ayarla
+                        </button>
+                    </div>
                     <p><strong>Başlangıç:</strong> Küçük bir çalı yangını</p>
-                    <p><strong>Konum:</strong> 36.8°K, 31.4°D</p>
+                    <p><strong>Konum:</strong> <span id="simLocation">36.8°K, 31.4°D</span></p>
+                    <p><strong>Adres:</strong> <span id="simAddress">Antalya - Manavgat</span></p>
                     <p><strong>Tarih:</strong> <span id="simDate"></span></p>
                     <p><strong>Hava Durumu:</strong> Sıcak, kuru, rüzgarlı</p>
                 </div>
+            </div>
+            
+            <div style="margin-top: 20px; margin-bottom: 20px;">
+                <h3>🗺️ Yangın Haritası</h3>
+                <div id="simMapContainer" style="height: 400px; width: 100%; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);"></div>
             </div>
 
             <div class="simulation-stats">
@@ -377,10 +564,6 @@
                 <div id="simAlertList"></div>
             </div>
 
-            <div class="simulation-map-container">
-                <h3>🗺️ Yangın Haritası</h3>
-                <div id="simMapContainer" style="height: 400px; width: 100%; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);"></div>
-            </div>
         </div>
 
         <!-- History Tab -->
@@ -739,8 +922,20 @@
         <p>Bu proje eğitim amaçlıdır. Gerçek yangın durumunda 112'yi arayın.</p>
     </footer>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <!-- Chart.js - Tracking prevention hatası için crossorigin ve integrity ekle -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <!-- Plotly.js - Güncel versiyon (v2.x) -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" crossorigin="anonymous"></script>
     <script src="script.js"></script>
+    <script src="leaflet_map.js"></script>
+    <script src="leaflet_map_tab.js"></script>
+    <script>
+        // Chart.js tracking prevention hatasını görmezden gel
+        if (typeof Chart !== 'undefined') {
+            console.log('✅ Chart.js yüklendi');
+        } else {
+            console.warn('⚠️ Chart.js yüklenemedi, tracking prevention hatası olabilir');
+        }
+    </script>
 </body>
 </html>
