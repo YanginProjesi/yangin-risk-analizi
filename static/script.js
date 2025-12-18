@@ -917,6 +917,7 @@ async function initializeMap(cityKey = 'ankara') {
     // Harita sekmesinde Leaflet haritasını kullan
     if (typeof initMapTabLeafletMap === 'function') {
         initMapTabLeafletMap(cityKey);
+        // initMapTabLeafletMap içinde mod kontrolü yapılıyor, burada tekrar yüklemeye gerek yok
     } else {
         console.warn('⚠️ initMapTabLeafletMap fonksiyonu bulunamadı, leaflet_map_tab.js yüklenmiş mi?');
         // Fallback: Eski Plotly kodunu kullan (token gerektirir)
@@ -959,7 +960,19 @@ async function changeMapMode() {
     // Haritayı yeniden yükle
     const currentCity = document.getElementById('mapCitySelect')?.value || 'ankara';
     console.log(`🗺️ Harita yeniden yükleniyor (Şehir: ${currentCity}, Mod: ${selectedMode})...`);
-    await initializeMap(currentCity);
+    
+    // Leaflet haritası kullanılıyorsa, moda göre veri yükle
+    if (typeof mapTabLeafletMap !== 'undefined' && mapTabLeafletMap) {
+        // Harita zaten var, sadece verileri güncelle
+        if (selectedMode === 'fires' && typeof loadFireDataForMapTab === 'function') {
+            await loadFireDataForMapTab();
+        } else if (selectedMode === 'risk' && typeof loadRiskDataForMapTab === 'function') {
+            await loadRiskDataForMapTab();
+        }
+    } else {
+        // Harita yoksa başlat
+        await initializeMap(currentCity);
+    }
 }
 
 // Harita legend'ını moda göre güncelle
@@ -1388,6 +1401,15 @@ function changeMapStyle() {
 function toggle3DView() {
     const checkbox = document.getElementById('view3D');
     is3DView = checkbox.checked;
+    
+    // Leaflet haritası kullanılıyorsa 3D görünüm desteklenmiyor
+    if (typeof mapTabLeafletMap !== 'undefined' && mapTabLeafletMap) {
+        alert('⚠️ 3D görünüm sadece Plotly haritasında çalışır. Şu anda Leaflet haritası kullanılıyor, bu nedenle 3D görünüm devre dışı.');
+        checkbox.checked = false;
+        is3DView = false;
+        return;
+    }
+    
     const currentCity = document.getElementById('mapCitySelect')?.value || 'ankara';
     initializeMap(currentCity);
 }
