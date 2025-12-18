@@ -8,11 +8,20 @@ let sensorData = {
     timestamps: []
 };
 
+// Leaflet.js kullanılıyor - Google Maps kaldırıldı
+
 // Chart instances
-let tempChart, smokeChart, timeSeriesChart;
+let tempChart, smokeChart;
 let mapInstance = null; // Plotly map instance
 let currentMapStyle = 'satellite'; // Default map style
 let is3DView = true; // Default 3D view
+let fireDataUpdateInterval = null; // NASA FIRMS veri güncelleme interval'i
+let lastFireDataUpdate = null; // Son güncelleme zamanı
+let currentMapMode = 'fires'; // 'fires' veya 'risk'
+let riskDataCache = {}; // Şehir bazlı risk verileri cache
+let previousFireData = []; // Önceki yangın verileri (yeni yangın tespiti için)
+let fireNotificationEnabled = true; // Yeni yangın bildirimleri açık/kapalı
+let notificationPermission = false; // Browser notification izni
 
 // Weather API - OpenWeatherMap (ücretsiz)
 // Not: API key almak için https://openweathermap.org/api adresine kaydolun
@@ -116,18 +125,86 @@ let currentWeather = {
     lastUpdate: null
 };
 
+// Current location data
+let currentLocation = {
+    lat: null,
+    lon: null,
+    city: 'ankara',
+    address: null,
+    accuracy: null,
+    source: 'manual' // 'gps', 'manual', 'city', 'map'
+};
+
+// Leaflet.js variables
+let dashboardMap = null;
+let routingControl = null; // Global routing control for Leaflet Routing Machine
+let dashboardMarker = null;
+let addressSearchTimeout = null;
+
 // Initialize the application
 document.addEventListener('DOMContentLoaded', async function() {
+    // Switch to dashboard tab (for map error fallback)
+    window.switchToDashboard = function() {
+        const dashboardTab = document.querySelector('[data-tab="dashboard"]');
+        if (dashboardTab) {
+            dashboardTab.click();
+            console.log('✅ İzleme Panosu sekmesine geçildi');
+        } else {
+            console.error('❌ Dashboard sekmesi bulunamadı');
+        }
+    };
+    
     initializeTabs();
     initializeCharts();
     initializeMapControls();
+    
+    // Dashboard tab açıksa Leaflet haritasını başlat
+    setTimeout(() => {
+        const dashboardTab = document.getElementById('dashboard');
+        if (dashboardTab && dashboardTab.classList.contains('active')) {
+            console.log('🔄 Dashboard aktif, Leaflet haritası başlatılıyor...');
+            if (typeof initLeafletMap === 'function') {
+                initLeafletMap();
+            } else {
+                console.warn('⚠️ initLeafletMap henüz tanımlı değil, leaflet_map.js yükleniyor olabilir');
+                // Retry after a delay
+                setTimeout(() => {
+                    if (typeof initLeafletMap === 'function') {
+                        initLeafletMap();
+                    }
+                }, 1000);
+            }
+        }
+    }, 1000);
+    
+    // İlk yüklemede legend'ı güncelle (varsayılan mod: aktif yangınlar)
+    updateMapLegend('fires');
+    
     initializeMap('ankara'); // Default to Ankara
     
     // Set initial location and active monitoring text
     const defaultCity = cities['ankara'];
     if (defaultCity) {
-        document.getElementById('location').textContent = defaultCity.name;
-        document.getElementById('activeMonitoring').textContent = `${defaultCity.name} - Aktif İzleme`;
+        currentLocation.lat = defaultCity.lat;
+        currentLocation.lon = defaultCity.lon;
+        currentLocation.city = 'ankara';
+        updateLocationDisplay(defaultCity.name, defaultCity.lat, defaultCity.lon);
+        const activeMonitoring = document.getElementById('activeMonitoring');
+        if (activeMonitoring) {
+            activeMonitoring.textContent = `${defaultCity.name} - Aktif İzleme`;
+        }
+    }
+    
+    // Check GPS support
+    if (navigator.geolocation) {
+        console.log('✅ GPS desteği mevcut');
+    } else {
+        console.warn('⚠️ GPS desteği yok');
+        const gpsBtn = document.getElementById('getLocationBtn');
+        if (gpsBtn) {
+            gpsBtn.disabled = true;
+            gpsBtn.textContent = '❌ GPS Desteklenmiyor';
+        }
     }
     
     // Fetch initial weather data
@@ -160,24 +237,80 @@ function initializeTabs() {
     const tabButtons = document.querySelectorAll('.tab-btn');
     const tabContents = document.querySelectorAll('.tab-content');
 
+    console.log('📑 Sekmeler başlatılıyor:', tabButtons.length, 'buton,', tabContents.length, 'içerik');
+
+    // Önceki event listener'ları temizle (çift bağlanmayı önlemek için)
     tabButtons.forEach(button => {
-        button.addEventListener('click', () => {
-            const targetTab = button.getAttribute('data-tab');
+        // Yeni event listener ekle (eski olanları override eder)
+        button.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const targetTab = this.getAttribute('data-tab');
+            
+            if (!targetTab) {
+                console.error('❌ Sekme butonu data-tab özelliği yok:', this);
+                return;
+            }
+            
+            const targetContent = document.getElementById(targetTab);
+            if (!targetContent) {
+                console.error('❌ Sekme içeriği bulunamadı:', targetTab);
+                return;
+            }
+            
+            console.log('🔄 Sekme değiştiriliyor:', targetTab);
             
             // Remove active class from all buttons and contents
             tabButtons.forEach(btn => btn.classList.remove('active'));
             tabContents.forEach(content => content.classList.remove('active'));
             
             // Add active class to clicked button and corresponding content
-            button.classList.add('active');
-            document.getElementById(targetTab).classList.add('active');
+            this.classList.add('active');
+            targetContent.classList.add('active');
             
             // If simulation tab is opened, check SMS service status
             if (targetTab === 'simulation') {
                 setTimeout(updateSMSStatus, 500);
             }
-        });
+            
+            // If dashboard tab is opened, initialize Leaflet map if not already done
+            if (targetTab === 'dashboard') {
+                setTimeout(() => {
+                    if (!dashboardMap) {
+                        console.log('🔄 Dashboard açıldı, Leaflet haritası başlatılıyor...');
+                        if (typeof initLeafletMap === 'function') {
+                            initLeafletMap();
+                        } else {
+                            console.warn('⚠️ initLeafletMap henüz tanımlı değil, leaflet_map.js yükleniyor olabilir');
+                        }
+                    } else {
+                        console.log('✅ Harita zaten var');
+                    }
+                }, 200);
+            }
+            
+            // If map tab is opened, ensure map is initialized
+            if (targetTab === 'map') {
+                // Harita sekmesi aktif edildiğinde Leaflet haritasını başlat
+                if (typeof onMapTabActivated === 'function') {
+                    onMapTabActivated();
+                } else {
+                    // Fallback: Eski yöntem
+                    const currentCity = document.getElementById('mapCitySelect')?.value || 'ankara';
+                    if (currentMapMode === 'risk') {
+                        setTimeout(() => {
+                            updateMapWithRiskPrediction(currentCity).catch(err => {
+                                console.error('Harita güncelleme hatası:', err);
+                            });
+                        }, 100);
+                    }
+                }
+            }
+        };
     });
+    
+    console.log('✅ Sekmeler başlatıldı');
 }
 
 // Open AI Chatbot tab (for floating button)
@@ -271,62 +404,297 @@ function initializeCharts() {
         }
     });
 
-    // Time series chart
-    const timeCtx = document.getElementById('timeSeriesChart').getContext('2d');
-    timeSeriesChart = new Chart(timeCtx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [
-                {
-                    label: 'Sıcaklık (°C)',
-                    data: [],
-                    borderColor: '#ff6b6b',
-                    backgroundColor: 'rgba(255, 107, 107, 0.1)',
-                    yAxisID: 'y',
-                    tension: 0.4
-                },
-                {
-                    label: 'Duman (PPM)',
-                    data: [],
-                    borderColor: '#667eea',
-                    backgroundColor: 'rgba(102, 126, 234, 0.1)',
-                    yAxisID: 'y1',
-                    tension: 0.4
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            interaction: {
-                mode: 'index',
-                intersect: false,
-            },
-            scales: {
-                y: {
-                    type: 'linear',
-                    display: true,
-                    position: 'left',
-                    min: 15,
-                    max: 50
-                },
-                y1: {
-                    type: 'linear',
-                    display: true,
-                    position: 'right',
-                    min: 0,
-                    max: 1000,
-                    grid: {
-                        drawOnChartArea: false,
-                    },
-                }
-            }
-        }
-    });
 }
 
-// Initialize map with Plotly - NASA FIRMS benzeri 3D
-function initializeMap(cityKey = 'ankara') {
+// NASA FIRMS gerçek zamanlı veri çekme
+async function fetchFireData(refresh = false) {
+    try {
+        const url = `${API_BASE_URL}/api/fire-data?days=7${refresh ? '&refresh=true' : ''}`;
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (result.success && result.data && result.data.length > 0) {
+            lastFireDataUpdate = new Date();
+            return result.data;
+        } else {
+            console.log('NASA FIRMS: Veri bulunamadı, örnek veri kullanılıyor');
+            return null; // Örnek veriye geri dön
+        }
+    } catch (error) {
+        console.error('NASA FIRMS veri hatası:', error);
+        return null; // Hata durumunda örnek veriye geri dön
+    }
+}
+
+// Haritayı gerçek zamanlı yangın verileriyle güncelle
+function updateMapWithFireData(fireData, cityKey = 'ankara') {
+    const city = cities[cityKey] || cities['ankara'];
+    
+    if (!fireData || fireData.length === 0) {
+        // Örnek veri kullan
+        initializeMapWithSampleData(cityKey);
+        return;
+    }
+    
+    // Şiddet seviyeleri için renkler (gerçek yangınlar için - risk değil, şiddet)
+    const intensityColors = {
+        low: '#4CAF50',
+        medium: '#FFC107',
+        high: '#FF9800',
+        critical: '#F44336'
+    };
+    
+    const intensityLabels = {
+        low: 'Düşük Şiddet',
+        medium: 'Orta Şiddet',
+        high: 'Yüksek Şiddet',
+        critical: 'Kritik Şiddet'
+    };
+    
+    // Veriyi şiddet seviyesine göre grupla (gerçek yangınlar için)
+    const intensityGroups = {
+        low: [],
+        medium: [],
+        high: [],
+        critical: []
+    };
+    
+    fireData.forEach(fire => {
+        // Önce intensity_level'ı kontrol et, yoksa risk_level'ı kullan (geriye dönük uyumluluk)
+        const intensityLevel = fire.intensity_level || fire.risk_level || 'medium';
+        intensityGroups[intensityLevel].push(fire);
+    });
+    
+    // Traces oluştur
+    const traces = [];
+    
+    Object.keys(intensityGroups).forEach(intensityLevel => {
+        const fires = intensityGroups[intensityLevel];
+        if (fires.length > 0) {
+            const sizeMultiplier = {
+                'low': 1.0,
+                'medium': 1.3,
+                'high': 1.8,
+                'critical': 2.5
+            };
+            
+            const baseSize = 12;
+            const markerSize = baseSize * sizeMultiplier[intensityLevel];
+            
+            traces.push({
+                type: 'scattermapbox',
+                mode: 'markers',
+                lat: fires.map(f => f.latitude),
+                lon: fires.map(f => f.longitude),
+                marker: {
+                    size: markerSize,
+                    color: intensityColors[intensityLevel],
+                    opacity: 0.85,
+                    line: { 
+                        width: 3, 
+                        color: 'white' 
+                    },
+                    sizemode: 'diameter',
+                    sizeref: 2
+                },
+                text: fires.map(f => {
+                    const intensityScore = f.intensity_score || f.risk_score || 'N/A';
+                    return `<b>🔥 NASA FIRMS - Aktif Yangın Tespiti</b><br>` +
+                    `<b>⚠️ Bu nokta uydu tarafından tespit edilmiş gerçek bir yangındır!</b><br><br>` +
+                    `Yangın Şiddeti: ${intensityLabels[intensityLevel]}<br>` +
+                    `Şiddet Skoru: ${intensityScore}/100<br>` +
+                    `Parlaklık: ${f.brightness || 'N/A'} (yüksek = büyük yangın)<br>` +
+                    `Tespit Güveni: ${f.confidence || 'N/A'}%<br>` +
+                    `Tespit Tarihi: ${f.acq_date || 'N/A'} ${f.acq_time || ''}<br>` +
+                    `Uydu: ${f.satellite || 'N/A'}<br>` +
+                    `Konum: ${f.latitude?.toFixed(4) || 'N/A'}°, ${f.longitude?.toFixed(4) || 'N/A'}°`;
+                }),
+                hovertemplate: '%{text}<extra></extra>',
+                name: `🔥 ${intensityLabels[intensityLevel]} (${fires.length})`,
+                showlegend: true
+            });
+        }
+    });
+    
+    // Seçili şehir marker'ı ekle
+    traces.push({
+        type: 'scattermapbox',
+        mode: 'markers',
+        lat: [city.lat],
+        lon: [city.lon],
+        marker: {
+            size: 20,
+            color: '#2196F3',
+            symbol: 'star',
+            opacity: 0.95,
+            line: { width: 3, color: 'white' }
+        },
+        text: [`📍 ${city.name}`],
+        hovertemplate: '<b>%{text}</b><br>Seçili Konum<extra></extra>',
+        name: '📍 Seçili Konum',
+        showlegend: true
+    });
+    
+    // Haritayı güncelle
+    updateMapPlot(traces, city);
+    
+    // Haritaya click event ekle (yangın detayları için)
+    setupMapClickHandler(fireData);
+    
+    // Yeni yangınları kontrol et ve uyarı ver
+    checkForNewFires(fireData);
+    
+    // Güncelleme bilgisini göster
+    const updateInfo = document.getElementById('fireDataUpdateInfo');
+    if (updateInfo) {
+        const updateTime = lastFireDataUpdate ? lastFireDataUpdate.toLocaleTimeString('tr-TR') : 'Henüz güncellenmedi';
+        updateInfo.textContent = `🔄 Son güncelleme: ${updateTime} | ${fireData.length} aktif yangın noktası`;
+    }
+}
+
+// Harita plot'unu güncelle
+function updateMapPlot(traces, city) {
+    try {
+        // Mapbox stil yapılandırması
+        // NOT: Plotly'de scattermapbox kullanmak için Mapbox token gerekir
+        // Token olmadan çalışması için "basic" veya "streets" stili kullanabiliriz
+        // Ancak en iyi çözüm: Leaflet kullanmak (zaten var)
+        // Bu Plotly haritası için basit bir stil kullanıyoruz
+        let mapboxStyle = 'basic'; // Plotly'de token gerektirmeyen stil
+        let mapboxLayers = [];
+        
+        // Stil seçimi - Plotly Mapbox için geçerli stiller
+        if (currentMapStyle === 'satellite') {
+            mapboxStyle = 'satellite-streets'; // Mapbox token gerektirir ama daha iyi
+        } else if (currentMapStyle === 'open-street-map' || currentMapStyle === 'open') {
+            mapboxStyle = 'open-street-map'; // Bu Plotly'de desteklenmez, basic kullan
+            mapboxStyle = 'basic'; // Token gerektirmeyen alternatif
+        } else if (currentMapStyle === 'carto-darkmatter') {
+            mapboxStyle = 'dark'; // Koyu tema
+        } else if (currentMapStyle === 'stamen-terrain') {
+            mapboxStyle = 'outdoors'; // Terrain benzeri
+        } else {
+            mapboxStyle = 'basic'; // Güvenli varsayılan
+        }
+        
+        // Eğer Mapbox token yoksa, basit stil kullan
+        // NOT: Plotly'de scattermapbox token olmadan çalışmaz
+        // Bu yüzden basit bir stil kullanıyoruz
+        
+        // Plotly Mapbox için layout
+        // NOT: scattermapbox Mapbox token gerektirir, token olmadan çalışmaz
+        // Bu yüzden "open-street-map" stilini kullanıyoruz (ama yine de token ister)
+        const layout = {
+            mapbox: {
+                style: 'open-street-map', // OpenStreetMap - token gerektirmez (ama scattermapbox token ister)
+                center: { lat: city.lat, lon: city.lon },
+                zoom: city.zoom || 8,
+                bearing: 0,
+                pitch: is3DView ? 50 : 0,
+                // Token olmadan çalışması için
+                accesstoken: ''
+            },
+            height: 700,
+            margin: { l: 0, r: 0, t: 0, b: 0 },
+            legend: {
+                yanchor: 'top',
+                y: 0.99,
+                xanchor: 'left',
+                x: 0.01,
+                bgcolor: 'rgba(255,255,255,0.95)',
+                bordercolor: 'black',
+                borderwidth: 2,
+                font: { size: 12 },
+                itemsizing: 'constant'
+            },
+            hovermode: 'closest',
+            paper_bgcolor: 'white',
+            plot_bgcolor: 'white'
+        };
+        
+        // Uydu görüntüsü için layers ekle (sadece satellite modunda)
+        if (currentMapStyle === 'satellite' && mapboxLayers.length > 0) {
+            layout.mapbox.layers = mapboxLayers;
+        }
+        
+        const config = {
+            responsive: true,
+            displayModeBar: true,
+            modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+            mapboxAccessToken: '' // Boş - white-bg token gerektirmez ama scattermapbox hala token ister
+        };
+        
+        const mapDiv = document.getElementById('mapContainer');
+        if (!mapDiv) {
+            console.error('❌ mapContainer bulunamadı!');
+            return;
+        }
+        
+        if (!traces || traces.length === 0) {
+            console.warn('⚠️ Traces boş, harita güncellenemiyor');
+            return;
+        }
+        
+        console.log('🗺️ Harita güncelleniyor:', traces.length, 'trace, stil: open-street-map');
+        
+        // Plotly haritayı oluştur
+        Plotly.newPlot('mapContainer', traces, layout, config)
+            .then(() => {
+                console.log('✅ Harita başarıyla güncellendi');
+                mapInstance = mapDiv;
+                
+                // Haritaya click event ekle (Plotly için)
+                mapDiv.on('plotly_click', function(data) {
+                    handleMapClick(data);
+                });
+            })
+            .catch(error => {
+                console.error('❌ Plotly harita hatası:', error);
+                console.warn('⚠️ Plotly Mapbox hatası yakalandı, kullanıcıya bilgi gösteriliyor...');
+                
+                // Plotly scattermapbox Mapbox token olmadan çalışmaz
+                // Kullanıcıya bilgi göster ve alternatif öner
+                const mapContainer = document.getElementById('mapContainer');
+                if (mapContainer) {
+                    mapContainer.innerHTML = `
+                        <div style="padding: 30px; text-align: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; margin: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+                            <h2 style="margin-top: 0; color: white;">🗺️ Harita Yüklenemedi</h2>
+                            <p style="font-size: 1.1em; margin: 15px 0;">
+                                Plotly haritası Mapbox token gerektirir.
+                            </p>
+                            <div style="background: rgba(255,255,255,0.2); padding: 20px; border-radius: 8px; margin: 20px 0;">
+                                <h3 style="margin-top: 0; color: white;">💡 Çözüm Önerileri:</h3>
+                                <div style="text-align: left; max-width: 500px; margin: 0 auto;">
+                                    <p style="margin: 10px 0;">
+                                        <strong>1. İzleme Panosu Kullanın (Önerilen):</strong><br>
+                                        <span style="font-size: 0.9em;">İzleme Panosu sekmesinde Leaflet haritası var ve token gerektirmez.</span>
+                                    </p>
+                                    <p style="margin: 10px 0;">
+                                        <strong>2. Mapbox Token Ekleyin:</strong><br>
+                                        <span style="font-size: 0.9em;">Ücretsiz Mapbox hesabı oluşturup token ekleyebilirsiniz.</span>
+                                    </p>
+                                </div>
+                            </div>
+                            <button onclick="switchToDashboard()" class="btn" style="background: white; color: #667eea; border: none; padding: 12px 24px; font-size: 1em; border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 15px;">
+                                📊 İzleme Panosu'na Git
+                            </button>
+                        </div>
+                    `;
+                }
+            });
+            
+    } catch (error) {
+        console.error('❌ updateMapPlot hatası:', error);
+    }
+}
+
+// Örnek veri ile harita başlat (fallback)
+function initializeMapWithSampleData(cityKey = 'ankara') {
     const city = cities[cityKey] || cities['ankara'];
 
     // Fire risk areas in Turkey (example locations)
@@ -431,28 +799,41 @@ function initializeMap(cityKey = 'ankara') {
     });
 
     // Mapbox style seçimi
-    let mapboxStyle = currentMapStyle;
-    if (currentMapStyle === 'satellite') {
-        // Uydu görüntüsü için custom layer
-        mapboxStyle = 'white-bg';
+    // NOT: Plotly'de scattermapbox Mapbox token gerektirir
+    // Token olmadan çalışması için "open-street-map" kullanıyoruz
+    let mapboxStyle = 'open-street-map'; // Varsayılan (ama scattermapbox token ister)
+    if (currentMapStyle === 'open-street-map') {
+        mapboxStyle = 'open-street-map';
+    } else if (currentMapStyle === 'carto-darkmatter') {
+        mapboxStyle = 'carto-darkmatter';
+    } else if (currentMapStyle === 'stamen-terrain') {
+        mapboxStyle = 'stamen-terrain';
+    } else if (currentMapStyle === 'satellite') {
+        // Uydu görüntüsü için open-street-map base kullan, custom layer ekleyeceğiz
+        mapboxStyle = 'open-street-map';
     }
+    
+    // Layers yapılandırması
+    // NOT: Plotly raster layers bazen sorun çıkarabilir, bu yüzden şimdilik kullanmıyoruz
+    let mapboxLayers = [];
+    // if (currentMapStyle === 'satellite') {
+    //     mapboxLayers = [{
+    //         'below': 'traces',
+    //         'sourcetype': 'raster',
+    //         'source': 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    //         'opacity': 1.0
+    //     }];
+    // }
 
     // NASA FIRMS benzeri 3D layout
     const layout = {
         mapbox: {
             style: mapboxStyle,
             center: { lat: city.lat, lon: city.lon },
-            zoom: city.zoom,
+            zoom: city.zoom || 8,
             bearing: 0,
             pitch: is3DView ? 50 : 0, // 3D açı - NASA FIRMS benzeri
-            layers: currentMapStyle === 'satellite' ? [{
-                'below': 'traces',
-                'sourcetype': 'raster',
-                'source': [
-                    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                ],
-                'opacity': 1.0
-            }] : []
+            layers: mapboxLayers
         },
         height: 700,
         margin: { l: 0, r: 0, t: 0, b: 0 },
@@ -476,11 +857,522 @@ function initializeMap(cityKey = 'ankara') {
         responsive: true,
         displayModeBar: true,
         modeBarButtonsToRemove: ['lasso2d', 'select2d'],
-        displaylogo: false
+        displaylogo: false,
+        mapboxAccessToken: '' // Boş - open-street-map token gerektirmez
     };
 
-    Plotly.newPlot('mapContainer', traces, layout, config);
-    mapInstance = { city: cityKey, layout: layout, style: currentMapStyle, is3D: is3DView };
+    const mapDiv = document.getElementById('mapContainer');
+    if (!mapDiv) {
+        console.error('❌ mapContainer bulunamadı!');
+        return;
+    }
+    
+    console.log('🗺️ Örnek harita oluşturuluyor:', traces.length, 'trace, stil:', mapboxStyle);
+    
+    Plotly.newPlot('mapContainer', traces, layout, config)
+        .then(() => {
+            console.log('✅ Örnek harita başarıyla oluşturuldu');
+            mapInstance = { city: cityKey, layout: layout, style: currentMapStyle, is3D: is3DView };
+        })
+        .catch(error => {
+            console.error('❌ Plotly harita hatası:', error);
+            console.warn('⚠️ Plotly Mapbox hatası yakalandı, kullanıcıya bilgi gösteriliyor...');
+            
+            // Plotly scattermapbox Mapbox token olmadan çalışmaz
+            // Kullanıcıya bilgi göster ve alternatif öner
+            const mapContainer = document.getElementById('mapContainer');
+            if (mapContainer) {
+                mapContainer.innerHTML = `
+                    <div style="padding: 30px; text-align: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; margin: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+                        <h2 style="margin-top: 0; color: white;">🗺️ Harita Yüklenemedi</h2>
+                        <p style="font-size: 1.1em; margin: 15px 0;">
+                            Plotly haritası Mapbox token gerektirir.
+                        </p>
+                        <div style="background: rgba(255,255,255,0.2); padding: 20px; border-radius: 8px; margin: 20px 0;">
+                            <h3 style="margin-top: 0; color: white;">💡 Çözüm Önerileri:</h3>
+                            <div style="text-align: left; max-width: 500px; margin: 0 auto;">
+                                <p style="margin: 10px 0;">
+                                    <strong>1. İzleme Panosu Kullanın (Önerilen):</strong><br>
+                                    <span style="font-size: 0.9em;">İzleme Panosu sekmesinde Leaflet haritası var ve token gerektirmez.</span>
+                                </p>
+                                <p style="margin: 10px 0;">
+                                    <strong>2. Mapbox Token Ekleyin:</strong><br>
+                                    <span style="font-size: 0.9em;">Ücretsiz Mapbox hesabı oluşturup token ekleyebilirsiniz.</span>
+                                </p>
+                            </div>
+                        </div>
+                        <button onclick="switchToDashboard()" class="btn" style="background: white; color: #667eea; border: none; padding: 12px 24px; font-size: 1em; border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 15px;">
+                            📊 İzleme Panosu'na Git
+                        </button>
+                    </div>
+                `;
+            }
+        });
+}
+
+// Ana initializeMap fonksiyonu - Leaflet haritasını kullan (NASA FIRMS verileri ile)
+async function initializeMap(cityKey = 'ankara') {
+    console.log(`🗺️ Harita başlatılıyor: Mod=${currentMapMode}, Şehir=${cityKey}`);
+    
+    // Harita sekmesinde Leaflet haritasını kullan
+    if (typeof initMapTabLeafletMap === 'function') {
+        initMapTabLeafletMap(cityKey);
+    } else {
+        console.warn('⚠️ initMapTabLeafletMap fonksiyonu bulunamadı, leaflet_map_tab.js yüklenmiş mi?');
+        // Fallback: Eski Plotly kodunu kullan (token gerektirir)
+        if (currentMapMode === 'fires') {
+            const fireData = await fetchFireData();
+            if (fireData && fireData.length > 0) {
+                updateMapWithFireData(fireData, cityKey);
+            } else {
+                initializeMapWithSampleData(cityKey);
+            }
+            startFireDataAutoUpdate(cityKey);
+        } else {
+            await updateMapWithRiskPrediction(cityKey);
+        }
+    }
+}
+
+// Harita modu değiştir
+async function changeMapMode() {
+    console.log('🔄 Harita modu değiştiriliyor...');
+    const modeRadios = document.querySelectorAll('input[name="mapMode"]');
+    const selectedMode = Array.from(modeRadios).find(r => r.checked)?.value || 'fires';
+    currentMapMode = selectedMode;
+    
+    console.log(`📌 Yeni mod: ${selectedMode}`);
+    
+    // Açıklama metnini güncelle
+    const descriptionEl = document.getElementById('mapModeDescription');
+    if (descriptionEl) {
+        if (selectedMode === 'fires') {
+            descriptionEl.innerHTML = '<strong>⚠️ Önemli:</strong> Bu haritada gösterilen tüm noktalar <strong>gerçek yangınlardır</strong> (NASA FIRMS uydu tespiti). "Kritik Şiddet" etiketi yangının şiddetini gösterir.';
+        } else {
+            descriptionEl.innerHTML = '<strong>⚠️ Yangın Riski Tahmini:</strong> Bu haritada gösterilen noktalar <strong>yangın çıkma riski yüksek olan bölgelerdir</strong> (ML model tahmini). Gerçek yangın değil, risk analizidir.';
+        }
+    }
+    
+    // Legend'ı güncelle
+    updateMapLegend(selectedMode);
+    
+    // Haritayı yeniden yükle
+    const currentCity = document.getElementById('mapCitySelect')?.value || 'ankara';
+    console.log(`🗺️ Harita yeniden yükleniyor (Şehir: ${currentCity}, Mod: ${selectedMode})...`);
+    await initializeMap(currentCity);
+}
+
+// Harita legend'ını moda göre güncelle
+function updateMapLegend(mode) {
+    const legendTitle = document.getElementById('legendTitle');
+    const legendLow = document.getElementById('legendLow');
+    const legendMedium = document.getElementById('legendMedium');
+    const legendHigh = document.getElementById('legendHigh');
+    const legendCritical = document.getElementById('legendCritical');
+    
+    if (mode === 'fires') {
+        // Aktif Yangınlar modu - Şiddet seviyeleri
+        if (legendTitle) legendTitle.textContent = 'Yangın Şiddet Seviyeleri:';
+        if (legendLow) legendLow.textContent = 'Düşük Şiddet';
+        if (legendMedium) legendMedium.textContent = 'Orta Şiddet';
+        if (legendHigh) legendHigh.textContent = 'Yüksek Şiddet';
+        if (legendCritical) legendCritical.textContent = 'Kritik Şiddet';
+    } else {
+        // Yangın Riski Tahmini modu - Risk seviyeleri
+        if (legendTitle) legendTitle.textContent = 'Yangın Risk Seviyeleri:';
+        if (legendLow) legendLow.textContent = 'Düşük Risk';
+        if (legendMedium) legendMedium.textContent = 'Orta Risk';
+        if (legendHigh) legendHigh.textContent = 'Yüksek Risk';
+        if (legendCritical) legendCritical.textContent = 'Kritik Risk';
+    }
+}
+
+// ML model ile yangın riski tahmini yap ve haritada göster
+async function updateMapWithRiskPrediction(cityKey = 'ankara') {
+    const city = cities[cityKey] || cities['ankara'];
+    
+    // Loading indicator göster
+    const updateInfo = document.getElementById('fireDataUpdateInfo');
+    if (updateInfo) {
+        updateInfo.textContent = '🔄 Yangın riski hesaplanıyor... (Bu işlem 10-30 saniye sürebilir)';
+    }
+    
+    console.log('🔄 Yangın riski tahmini başlatılıyor...');
+    
+    // Önemli şehirler için risk hesapla (tüm şehirler çok fazla API çağrısı yapar)
+    const importantCities = [
+        'adana', 'antalya', 'muğla', 'izmir', 'bursa', 'istanbul', 'ankara',
+        'mersin', 'aydın', 'denizli', 'balıkesir', 'çanakkale', 'manisa',
+        'afyonkarahisar', 'kütahya', 'eskişehir', 'kocaeli', 'sakarya'
+    ];
+    
+    const riskData = [];
+    let successCount = 0;
+    let errorCount = 0;
+    
+    // Her şehir için risk hesapla
+    for (const cityKey of importantCities) {
+        const cityData = cities[cityKey];
+        if (!cityData) continue;
+        
+        // Cache'den kontrol et
+        if (riskDataCache[cityKey] && 
+            (Date.now() - riskDataCache[cityKey].timestamp) < 300000) { // 5 dakika cache
+            riskData.push(riskDataCache[cityKey].data);
+            continue;
+        }
+        
+        try {
+            // Hava durumu verilerini al
+            const weatherData = await fetchWeatherDataAlternative(cityKey);
+            
+            if (!weatherData) {
+                console.warn(`⚠️ ${cityData.name}: Hava durumu verisi alınamadı`);
+                continue;
+            }
+            
+            console.log(`🌤️ ${cityData.name}: Hava durumu alındı (${weatherData.temperature}°C, ${weatherData.humidity}%)`);
+            
+            // ML model için özellikler hazırla
+            const now = new Date();
+            const month = now.getMonth() + 1;
+            const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 1000 / 60 / 60 / 24);
+            
+            const features = {
+                temperature: weatherData.temperature || 25,
+                humidity: weatherData.humidity || 50,
+                wind_speed: (weatherData.windSpeed || 10) * 3.6, // m/s to km/h
+                wind_direction: weatherData.windDirection || 180,
+                precipitation: weatherData.precipitation || 0,
+                month: month,
+                day_of_year: dayOfYear,
+                historical_fires_nearby: 1, // Varsayılan
+                vegetation_index: 0.6, // Varsayılan (ormanlık bölgeler için)
+                elevation: 500 // Varsayılan
+            };
+            
+            // ML model ile risk tahmini yap
+            console.log(`🤖 ${cityData.name}: Risk tahmini yapılıyor...`);
+            const response = await fetch(`${API_BASE_URL}/api/predict-risk`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(features)
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Risk seviyesini normalize et
+                    let riskLevel = result.risk_level || 'Orta';
+                    if (typeof riskLevel === 'string') {
+                        riskLevel = riskLevel.toLowerCase();
+                        // Türkçe değerleri İngilizce'ye çevir
+                        if (riskLevel.includes('düşük') || riskLevel === 'low' || riskLevel === 'dusuk') {
+                            riskLevel = 'low';
+                        } else if (riskLevel.includes('orta') || riskLevel === 'medium') {
+                            riskLevel = 'medium';
+                        } else if (riskLevel.includes('yüksek') || riskLevel === 'high' || riskLevel === 'yuksek') {
+                            riskLevel = 'high';
+                        } else if (riskLevel.includes('kritik') || riskLevel === 'critical') {
+                            riskLevel = 'critical';
+                        } else {
+                            riskLevel = 'medium';
+                        }
+                    } else {
+                        riskLevel = 'medium';
+                    }
+                    
+                    // Hava durumu verilerini risk bilgisine ekle
+                    const riskInfo = {
+                        name: cityData.name,
+                        lat: cityData.lat,
+                        lon: cityData.lon,
+                        risk_score: result.risk_score,
+                        risk_level: riskLevel,
+                        temperature: features.temperature,
+                        humidity: features.humidity,
+                        wind_speed: features.wind_speed,
+                        wind_direction: features.wind_direction,
+                        precipitation: features.precipitation
+                    };
+                    
+                    riskData.push(riskInfo);
+                    successCount++;
+                    
+                    // Cache'e kaydet
+                    riskDataCache[cityKey] = {
+                        data: riskInfo,
+                        timestamp: Date.now()
+                    };
+                    
+                    console.log(`✅ ${cityData.name}: Risk skoru ${result.risk_score.toFixed(1)} (${result.risk_level})`);
+                } else {
+                    errorCount++;
+                    console.warn(`⚠️ ${cityData.name}: API başarısız - ${result.message || 'Bilinmeyen hata'}`);
+                }
+            } else {
+                errorCount++;
+                const errorText = await response.text().catch(() => 'Bilinmeyen hata');
+                console.error(`❌ ${cityData.name}: API yanıtı başarısız (${response.status}) - ${errorText}`);
+            }
+        } catch (error) {
+            errorCount++;
+            console.error(`❌ Risk tahmini hatası (${cityKey}):`, error);
+        }
+    }
+    
+    console.log(`📊 Risk tahmini tamamlandı: ${successCount} başarılı, ${errorCount} hata, Toplam: ${riskData.length} nokta`);
+    
+    // Haritada göster
+    if (riskData.length > 0) {
+        console.log('✅ Risk verileri haritada gösteriliyor:', riskData.length, 'nokta');
+        displayRiskPredictionOnMap(riskData, city);
+        if (updateInfo) {
+            updateInfo.textContent = `✅ Yangın Riski Tahmini | ${riskData.length} şehir analiz edildi | 🤖 ML Model`;
+        }
+    } else {
+        // Fallback: Örnek risk verileri göster (gerçek yangın değil, risk tahmini)
+        console.warn('⚠️ Risk verisi bulunamadı, örnek risk verileri gösteriliyor');
+        if (updateInfo) {
+            updateInfo.textContent = '⚠️ Risk verisi yüklenemedi, örnek risk verileri gösteriliyor';
+        }
+        displaySampleRiskData(cityKey);
+    }
+}
+
+// Örnek risk verileri göster (gerçek yangın değil, risk tahmini)
+function displaySampleRiskData(cityKey = 'ankara') {
+    const city = cities[cityKey] || cities['ankara'];
+    
+    // Örnek risk verileri (gerçek yangın değil, risk tahmini)
+    const sampleRiskData = [
+        { name: 'Antalya', lat: 36.8969, lon: 30.7133, risk_score: 75, risk_level: 'high', temperature: 35, humidity: 30, wind_speed: 20 },
+        { name: 'Muğla', lat: 37.2153, lon: 28.3636, risk_score: 72, risk_level: 'high', temperature: 33, humidity: 35, wind_speed: 18 },
+        { name: 'İzmir', lat: 38.4237, lon: 27.1428, risk_score: 65, risk_level: 'high', temperature: 32, humidity: 40, wind_speed: 15 },
+        { name: 'Adana', lat: 37.0000, lon: 35.3213, risk_score: 68, risk_level: 'high', temperature: 34, humidity: 35, wind_speed: 12 },
+        { name: 'Mersin', lat: 36.8000, lon: 34.6333, risk_score: 70, risk_level: 'high', temperature: 33, humidity: 38, wind_speed: 14 },
+        { name: 'Aydın', lat: 37.8444, lon: 27.8458, risk_score: 60, risk_level: 'medium', temperature: 31, humidity: 42, wind_speed: 16 },
+        { name: 'Denizli', lat: 37.7765, lon: 29.0864, risk_score: 55, risk_level: 'medium', temperature: 30, humidity: 45, wind_speed: 13 },
+        { name: 'Balıkesir', lat: 39.6484, lon: 27.8826, risk_score: 50, risk_level: 'medium', temperature: 28, humidity: 50, wind_speed: 10 },
+        { name: 'Çanakkale', lat: 40.1553, lon: 26.4142, risk_score: 45, risk_level: 'medium', temperature: 27, humidity: 55, wind_speed: 12 },
+        { name: 'Manisa', lat: 38.6191, lon: 27.4289, risk_score: 58, risk_level: 'medium', temperature: 29, humidity: 48, wind_speed: 11 },
+        { name: 'Bursa', lat: 40.1826, lon: 29.0665, risk_score: 40, risk_level: 'low', temperature: 26, humidity: 60, wind_speed: 8 },
+        { name: 'İstanbul', lat: 41.0082, lon: 28.9784, risk_score: 35, risk_level: 'low', temperature: 25, humidity: 65, wind_speed: 10 }
+    ];
+    
+    console.log('📊 Örnek risk verileri gösteriliyor:', sampleRiskData.length, 'nokta');
+    displayRiskPredictionOnMap(sampleRiskData, city);
+}
+
+// Risk tahmini verilerini haritada göster
+function displayRiskPredictionOnMap(riskData, city) {
+    const riskColors = {
+        low: '#4CAF50',
+        medium: '#FFC107',
+        high: '#FF9800',
+        critical: '#F44336'
+    };
+    
+    const riskLabels = {
+        low: 'Düşük Risk',
+        medium: 'Orta Risk',
+        high: 'Yüksek Risk',
+        critical: 'Kritik Risk'
+    };
+    
+    // Risk seviyesine göre grupla
+    const riskGroups = {
+        low: [],
+        medium: [],
+        high: [],
+        critical: []
+    };
+    
+    // Güvenlik kontrolü
+    if (!riskData || !Array.isArray(riskData) || riskData.length === 0) {
+        console.error('❌ HATA: riskData boş veya geçersiz!', riskData);
+        return;
+    }
+    
+    console.log('📊 Risk verileri işleniyor:', riskData.length, 'nokta');
+    
+    riskData.forEach((data, index) => {
+        if (!data) {
+            console.warn(`⚠️ İndeks ${index}: data undefined`);
+            return;
+        }
+        
+        let riskLevel = data.risk_level || 'medium';
+        
+        // Risk seviyesini normalize et (büyük/küçük harf, Türkçe/İngilizce)
+        if (typeof riskLevel === 'string') {
+            riskLevel = riskLevel.toLowerCase();
+            // Türkçe değerleri İngilizce'ye çevir
+            if (riskLevel.includes('düşük') || riskLevel === 'low' || riskLevel === 'dusuk') {
+                riskLevel = 'low';
+            } else if (riskLevel.includes('orta') || riskLevel === 'medium') {
+                riskLevel = 'medium';
+            } else if (riskLevel.includes('yüksek') || riskLevel === 'high' || riskLevel === 'yuksek') {
+                riskLevel = 'high';
+            } else if (riskLevel.includes('kritik') || riskLevel === 'critical') {
+                riskLevel = 'critical';
+            } else {
+                // Bilinmeyen değer için varsayılan
+                console.warn(`⚠️ Bilinmeyen risk seviyesi: "${data.risk_level}", medium olarak ayarlandı`);
+                riskLevel = 'medium';
+            }
+        } else {
+            console.warn(`⚠️ Risk seviyesi string değil: ${typeof riskLevel}, medium olarak ayarlandı`);
+            riskLevel = 'medium';
+        }
+        
+        // Güvenli push - riskGroups'da yoksa medium'a ekle
+        if (riskGroups[riskLevel] && Array.isArray(riskGroups[riskLevel])) {
+            riskGroups[riskLevel].push(data);
+        } else {
+            console.error(`❌ HATA: riskGroups[${riskLevel}] tanımlı değil! Medium'a ekleniyor.`);
+            if (riskGroups['medium']) {
+                riskGroups['medium'].push(data);
+            } else {
+                console.error('❌ KRİTİK HATA: riskGroups["medium"] bile tanımlı değil!');
+            }
+        }
+    });
+    
+    console.log('📊 Risk grupları:', {
+        low: riskGroups.low.length,
+        medium: riskGroups.medium.length,
+        high: riskGroups.high.length,
+        critical: riskGroups.critical.length
+    });
+    
+    // Traces oluştur
+    const traces = [];
+    
+    Object.keys(riskGroups).forEach(riskLevel => {
+        const areas = riskGroups[riskLevel];
+        if (areas.length > 0) {
+            const sizeMultiplier = {
+                'low': 1.0,
+                'medium': 1.3,
+                'high': 1.8,
+                'critical': 2.5
+            };
+            
+            const baseSize = 12;
+            const markerSize = baseSize * sizeMultiplier[riskLevel];
+            
+            traces.push({
+                type: 'scattermapbox',
+                mode: 'markers',
+                lat: areas.map(a => a.lat),
+                lon: areas.map(a => a.lon),
+                marker: {
+                    size: markerSize,
+                    color: riskColors[riskLevel],
+                    opacity: 0.85,
+                    line: { 
+                        width: 3, 
+                        color: 'white' 
+                    },
+                    sizemode: 'diameter',
+                    sizeref: 2
+                },
+                text: areas.map(a => 
+                    `<b>⚠️ ${a.name} - Yangın Riski Tahmini</b><br>` +
+                    `Risk Seviyesi: ${riskLabels[riskLevel]}<br>` +
+                    `Risk Skoru: ${a.risk_score?.toFixed(1) || 'N/A'}/100<br>` +
+                    `Sıcaklık: ${a.temperature?.toFixed(1) || 'N/A'}°C<br>` +
+                    `Nem: ${a.humidity?.toFixed(0) || 'N/A'}%<br>` +
+                    `Rüzgar: ${a.wind_speed?.toFixed(1) || 'N/A'} km/h<br>` +
+                    `Konum: ${a.lat?.toFixed(4) || 'N/A'}°, ${a.lon?.toFixed(4) || 'N/A'}°<br>` +
+                    `<i>🤖 ML Model Tahmini</i>`
+                ),
+                hovertemplate: '%{text}<extra></extra>',
+                name: `⚠️ ${riskLabels[riskLevel]} (${areas.length})`,
+                showlegend: true
+            });
+        }
+    });
+    
+    // Seçili şehir marker'ı ekle
+    traces.push({
+        type: 'scattermapbox',
+        mode: 'markers',
+        lat: [city.lat],
+        lon: [city.lon],
+        marker: {
+            size: 20,
+            color: '#2196F3',
+            symbol: 'star',
+            opacity: 0.95,
+            line: { width: 3, color: 'white' }
+        },
+        text: [`📍 ${city.name}`],
+        hovertemplate: '<b>%{text}</b><br>Seçili Konum<extra></extra>',
+        name: '📍 Seçili Konum',
+        showlegend: true
+    });
+    
+    // Haritayı güncelle
+    console.log('🗺️ Risk haritası güncelleniyor:', traces.length, 'trace,', riskData.length, 'nokta');
+    if (traces.length === 0) {
+        console.error('❌ HATA: Traces boş! Harita güncellenemiyor.');
+        return;
+    }
+    updateMapPlot(traces, city);
+    console.log('✅ Risk haritası başarıyla güncellendi!');
+    
+    // Güncelleme bilgisini göster
+    const updateInfo = document.getElementById('fireDataUpdateInfo');
+    if (updateInfo) {
+        updateInfo.textContent = `✅ Yangın Riski Tahmini | ${riskData.length} şehir analiz edildi | 🤖 ML Model`;
+    }
+}
+
+// Periyodik veri güncelleme başlat
+function startFireDataAutoUpdate(cityKey) {
+    // Önceki interval'i temizle
+    if (fireDataUpdateInterval) {
+        clearInterval(fireDataUpdateInterval);
+    }
+    
+    // Her 5 dakikada bir güncelle (300000 ms)
+    fireDataUpdateInterval = setInterval(async () => {
+        const fireData = await fetchFireData();
+        if (fireData && fireData.length > 0) {
+            // Harita sekmesinde Leaflet kullanılıyorsa
+            if (typeof loadFireDataForMapTab === 'function') {
+                loadFireDataForMapTab();
+            } else {
+                // Fallback: Eski Plotly yöntemi
+                const currentCity = document.getElementById('mapCitySelect')?.value || cityKey;
+                updateMapWithFireData(fireData, currentCity);
+            }
+        }
+    }, 300000); // 5 dakika
+    
+    console.log('🔄 NASA FIRMS otomatik güncelleme başlatıldı (5 dakikada bir)');
+}
+
+// Manuel güncelleme butonu için
+async function refreshFireData() {
+    const currentCity = document.getElementById('mapCitySelect')?.value || 'ankara';
+    const fireData = await fetchFireData(true); // refresh=true
+    
+    if (fireData && fireData.length > 0) {
+        // Harita sekmesinde Leaflet kullanılıyorsa
+        if (typeof displayFireDataOnMapTab === 'function') {
+            displayFireDataOnMapTab(fireData);
+        } else {
+            // Fallback: Eski Plotly yöntemi
+            updateMapWithFireData(fireData, currentCity);
+        alert(`✅ Harita güncellendi! ${fireData.length} aktif yangın noktası bulundu.`);
+    } else {
+        initializeMapWithSampleData(currentCity);
+        alert('⚠️ Gerçek zamanlı veri bulunamadı, örnek veri gösteriliyor.');
+    }
 }
 
 // Change map style
@@ -499,6 +1391,251 @@ function toggle3DView() {
     initializeMap(currentCity);
 }
 
+// GPS ile konum al
+function getCurrentLocation() {
+    const btn = document.getElementById('getLocationBtn');
+    if (!navigator.geolocation) {
+        alert('❌ Tarayıcınız GPS konum servisini desteklemiyor.');
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.textContent = '🔄 Konum alınıyor...';
+    
+    const options = {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+    };
+    
+    navigator.geolocation.getCurrentPosition(
+        async (position) => {
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            const accuracy = position.coords.accuracy;
+            
+            console.log(`📍 GPS Konum: ${lat}, ${lon} (Doğruluk: ±${accuracy.toFixed(0)}m)`);
+            
+            currentLocation.lat = lat;
+            currentLocation.lon = lon;
+            currentLocation.accuracy = accuracy;
+            currentLocation.source = 'gps';
+            
+            // En yakın şehri bul
+            const nearestCity = findNearestCity(lat, lon);
+            if (nearestCity) {
+                currentLocation.city = nearestCity.key;
+                const citySelect = document.getElementById('citySelect');
+                if (citySelect) {
+                    citySelect.value = nearestCity.key;
+                }
+            }
+            
+            // Adres bilgisini al (reverse geocoding)
+            const address = await getAddressFromCoordinates(lat, lon);
+            currentLocation.address = address;
+            
+            // Konum bilgisini güncelle
+            const locationName = address || nearestCity?.name || 'Bilinmeyen Konum';
+            updateLocationDisplay(locationName, lat, lon, address, accuracy);
+            
+            // Hava durumu verilerini güncelle
+            if (USE_WEATHER_API && currentLocation.city) {
+                await fetchWeatherDataAlternative(currentLocation.city);
+            }
+            
+            btn.disabled = false;
+            btn.textContent = '📍 GPS ile Konum Al';
+            
+            // Haritayı güncelle
+            if (currentLocation.city) {
+                initializeMap(currentLocation.city);
+            }
+        },
+        (error) => {
+            console.error('❌ GPS hatası:', error);
+            let errorMsg = 'Konum alınamadı: ';
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    errorMsg += 'Konum izni reddedildi. Lütfen tarayıcı ayarlarından konum iznini açın.';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    errorMsg += 'Konum bilgisi alınamadı.';
+                    break;
+                case error.TIMEOUT:
+                    errorMsg += 'Konum alma zaman aşımına uğradı.';
+                    break;
+                default:
+                    errorMsg += 'Bilinmeyen hata.';
+                    break;
+            }
+            alert(errorMsg);
+            btn.disabled = false;
+            btn.textContent = '📍 GPS ile Konum Al';
+        },
+        options
+    );
+}
+
+// Manuel koordinat girişi toggle
+function toggleManualLocation() {
+    const inputDiv = document.getElementById('manualLocationInput');
+    const btn = document.getElementById('manualLocationBtn');
+    
+    if (inputDiv.style.display === 'none') {
+        inputDiv.style.display = 'block';
+        btn.textContent = '❌ İptal';
+        // Mevcut koordinatları doldur
+        if (currentLocation.lat && currentLocation.lon) {
+            document.getElementById('manualLat').value = currentLocation.lat;
+            document.getElementById('manualLon').value = currentLocation.lon;
+        }
+    } else {
+        inputDiv.style.display = 'none';
+        btn.textContent = '📝 Manuel Koordinat Gir';
+    }
+}
+
+// Manuel koordinat ayarla
+async function setManualLocation() {
+    const lat = parseFloat(document.getElementById('manualLat').value);
+    const lon = parseFloat(document.getElementById('manualLon').value);
+    
+    if (isNaN(lat) || isNaN(lon)) {
+        alert('❌ Lütfen geçerli koordinat girin.');
+        return;
+    }
+    
+    if (lat < 35 || lat > 43 || lon < 25 || lon > 45) {
+        if (!confirm('⚠️ Girilen koordinatlar Türkiye sınırları dışında görünüyor. Devam etmek istiyor musunuz?')) {
+            return;
+        }
+    }
+    
+    currentLocation.lat = lat;
+    currentLocation.lon = lon;
+    currentLocation.source = 'manual';
+    currentLocation.accuracy = null;
+    
+    // En yakın şehri bul
+    const nearestCity = findNearestCity(lat, lon);
+    if (nearestCity) {
+        currentLocation.city = nearestCity.key;
+        const citySelect = document.getElementById('citySelect');
+        if (citySelect) {
+            citySelect.value = nearestCity.key;
+        }
+    }
+    
+    // Adres bilgisini al
+    const address = await getAddressFromCoordinates(lat, lon);
+    currentLocation.address = address;
+    
+    // Konum bilgisini güncelle
+    const locationName = address || nearestCity?.name || `Koordinat: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    updateLocationDisplay(locationName, lat, lon, address);
+    
+    // Manuel girişi kapat
+    toggleManualLocation();
+    
+    // Hava durumu verilerini güncelle
+    if (USE_WEATHER_API && currentLocation.city) {
+        await fetchWeatherDataAlternative(currentLocation.city);
+    }
+    
+    // Haritayı güncelle
+    if (currentLocation.city) {
+        initializeMap(currentLocation.city);
+    }
+}
+
+// En yakın şehri bul
+function findNearestCity(lat, lon) {
+    let nearestCity = null;
+    let minDistance = Infinity;
+    
+    Object.keys(cities).forEach(key => {
+        const city = cities[key];
+        if (city.lat && city.lon) {
+            const distance = Math.sqrt(
+                Math.pow(city.lat - lat, 2) + Math.pow(city.lon - lon, 2)
+            );
+            if (distance < minDistance) {
+                minDistance = distance;
+                nearestCity = { key, name: city.name, distance };
+            }
+        }
+    });
+    
+    return nearestCity;
+}
+
+// Koordinatlardan adres al (reverse geocoding)
+async function getAddressFromCoordinates(lat, lon) {
+    try {
+        // OpenStreetMap Nominatim API (ücretsiz)
+        const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`,
+            {
+                headers: {
+                    'User-Agent': 'YanginRiskAnalizi/1.0'
+                }
+            }
+        );
+        
+        if (response.ok) {
+            const data = await response.json();
+            if (data.address) {
+                const addr = data.address;
+                const parts = [];
+                
+                if (addr.road) parts.push(addr.road);
+                if (addr.suburb || addr.neighbourhood) parts.push(addr.suburb || addr.neighbourhood);
+                if (addr.city || addr.town || addr.village) parts.push(addr.city || addr.town || addr.village);
+                if (addr.state) parts.push(addr.state);
+                
+                return parts.length > 0 ? parts.join(', ') : data.display_name;
+            }
+        }
+    } catch (error) {
+        console.warn('⚠️ Adres bilgisi alınamadı:', error);
+    }
+    
+    return null;
+}
+
+// Konum bilgisini ekranda güncelle
+function updateLocationDisplay(name, lat, lon, address = null, accuracy = null) {
+    const locationEl = document.getElementById('location');
+    const coordinatesEl = document.getElementById('coordinates');
+    const addressEl = document.getElementById('address');
+    
+    if (locationEl) {
+        locationEl.textContent = name;
+    }
+    
+    if (coordinatesEl) {
+        let coordText = `Koordinat: ${lat.toFixed(4)}°K, ${lon.toFixed(4)}°D`;
+        if (accuracy) {
+            coordText += ` (±${accuracy.toFixed(0)}m)`;
+        }
+        coordinatesEl.textContent = coordText;
+    }
+    
+    if (addressEl && address) {
+        addressEl.textContent = `📍 ${address}`;
+        addressEl.style.display = 'block';
+    } else if (addressEl) {
+        addressEl.style.display = 'none';
+    }
+    
+    // Aktif izleme metnini güncelle
+    const activeMonitoring = document.getElementById('activeMonitoring');
+    if (activeMonitoring) {
+        activeMonitoring.textContent = `${name} - Aktif İzleme`;
+    }
+}
+
 // Change city in dashboard
 async function changeCity() {
     const select = document.getElementById('citySelect');
@@ -506,7 +1643,12 @@ async function changeCity() {
     const city = cities[selectedCity];
     
     if (city) {
-        document.getElementById('location').textContent = city.name;
+        currentLocation.lat = city.lat;
+        currentLocation.lon = city.lon;
+        currentLocation.city = selectedCity;
+        currentLocation.source = 'city';
+        
+        updateLocationDisplay(city.name, city.lat, city.lon);
         document.getElementById('activeMonitoring').textContent = `${city.name} - Aktif İzleme`;
         
         // Fetch new weather data for selected city
@@ -542,12 +1684,17 @@ function updateWeatherInfo(weather) {
 }
 
 // Change city in map
-function changeMapCity() {
+async function changeMapCity() {
     const select = document.getElementById('mapCitySelect');
     const selectedCity = select.value;
     
     if (selectedCity && cities[selectedCity]) {
-        initializeMap(selectedCity);
+        // Harita sekmesinde Leaflet kullanılıyorsa
+        if (typeof changeMapTabCity === 'function') {
+            changeMapTabCity();
+        } else {
+            await initializeMap(selectedCity);
+        }
     }
 }
 
@@ -901,12 +2048,6 @@ function updateCharts() {
     smokeChart.data.labels = sensorData.timestamps;
     smokeChart.data.datasets[0].data = sensorData.smoke;
     smokeChart.update('none');
-    
-    // Update time series chart
-    timeSeriesChart.data.labels = sensorData.timestamps;
-    timeSeriesChart.data.datasets[0].data = sensorData.temperature;
-    timeSeriesChart.data.datasets[1].data = sensorData.smoke;
-    timeSeriesChart.update('none');
 }
 
 // Fire simulation function
@@ -959,6 +2100,9 @@ const simulationData = {
     area: 0.01, // km²
     speed: 2.5, // km/h
     direction: 135, // degrees (Güneydoğu)
+    latitude: 36.8, // Default location
+    longitude: 31.4, // Default location
+    address: 'Antalya - Manavgat', // Default address
     temperature: 25,
     smoke: 0,
     windSpeed: 15,
@@ -968,9 +2112,18 @@ const simulationData = {
 
 // Initialize simulation
 function initSimulation() {
+    // Update location display
+    updateSimulationLocationDisplay();
+    
+    // Initialize map
+    initializeSimMap();
+    
     // Set initial date
     const now = new Date();
-    document.getElementById('simDate').textContent = now.toLocaleDateString('tr-TR');
+    const simDateEl = document.getElementById('simDate');
+    if (simDateEl) {
+        simDateEl.textContent = now.toLocaleDateString('tr-TR');
+    }
     
     // Set initial speed value display
     const speedValueElement = document.getElementById('speedValue');
@@ -1032,6 +2185,12 @@ function initSimulation() {
 function startFireSimulation() {
     if (simulationRunning && !simulationPaused) return;
     
+    // Check if location is set
+    if (!simulationData.latitude || !simulationData.longitude) {
+        alert('⚠️ Lütfen önce yangın konumunu belirleyin (GPS veya manuel koordinat).');
+        return;
+    }
+    
     simulationRunning = true;
     simulationPaused = false;
     
@@ -1039,7 +2198,10 @@ function startFireSimulation() {
     document.getElementById('pauseSimulation').disabled = false;
     
     // Add initial alert
-    addSimAlert('info', '🔥 Yangın tespit edildi! Simülasyon başlatıldı.');
+    addSimAlert('info', `🔥 Yangın tespit edildi! Simülasyon başlatıldı.\nKonum: ${simulationData.address || `${simulationData.latitude.toFixed(4)}°K, ${simulationData.longitude.toFixed(4)}°D`}`);
+    
+    // Initialize map with fire location
+    initializeSimMap();
     
     // SMS gönder
     sendSimulationSMS();
@@ -1141,7 +2303,7 @@ function sendSimulationSMS() {
             risk_score: 85.0,
             latitude: latitude,
             longitude: longitude,
-            message: '[YANGIN] YANGIN SIMULASYONU BASLATILDI!\n\nAntalya - Manavgat bolgesinde yangin simulasyonu baslatildi. Sistem yangin gelisimini izliyor.'
+            message: `[YANGIN] YANGIN SIMULASYONU BASLATILDI!\n\n${location} bolgesinde yangin simulasyonu baslatildi.\nKoordinat: ${latitude.toFixed(4)}°K, ${longitude.toFixed(4)}°D\nSistem yangin gelisimini izliyor.`
         };
         
         // Create timeout promise for SMS sending
@@ -1254,7 +2416,7 @@ function resetFireSimulation() {
         simChart.update();
     }
     
-    // Reset map
+    // Reset map (keep location)
     initializeSimMap();
 }
 
@@ -1380,10 +2542,142 @@ function updateSimSpeed() {
     }
 }
 
+// GPS ile simülasyon konumu al
+function getSimulationLocation() {
+    const btn = document.getElementById('getSimLocationBtn');
+    if (!navigator.geolocation) {
+        alert('❌ Tarayıcınız GPS konum servisini desteklemiyor.');
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.textContent = '🔄 Konum alınıyor...';
+    
+    const options = {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+    };
+    
+    navigator.geolocation.getCurrentPosition(
+        async (position) => {
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            const accuracy = position.coords.accuracy;
+            
+            console.log(`📍 Simülasyon GPS Konum: ${lat}, ${lon} (Doğruluk: ±${accuracy.toFixed(0)}m)`);
+            
+            simulationData.latitude = lat;
+            simulationData.longitude = lon;
+            
+            // Adres bilgisini al
+            const address = await getAddressFromCoordinates(lat, lon);
+            simulationData.address = address || `${lat.toFixed(4)}°K, ${lon.toFixed(4)}°D`;
+            
+            // Konum bilgisini güncelle
+            updateSimulationLocationDisplay();
+            
+            // Haritayı güncelle
+            initializeSimMap();
+            
+            btn.disabled = false;
+            btn.textContent = '📍 GPS ile Konum Al';
+        },
+        (error) => {
+            console.error('❌ GPS hatası:', error);
+            let errorMsg = 'Konum alınamadı: ';
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    errorMsg += 'Konum izni reddedildi.';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    errorMsg += 'Konum bilgisi alınamadı.';
+                    break;
+                case error.TIMEOUT:
+                    errorMsg += 'Konum alma zaman aşımına uğradı.';
+                    break;
+                default:
+                    errorMsg += 'Bilinmeyen hata.';
+                    break;
+            }
+            alert(errorMsg);
+            btn.disabled = false;
+            btn.textContent = '📍 GPS ile Konum Al';
+        },
+        options
+    );
+}
+
+// Manuel simülasyon konumu toggle
+function toggleManualSimLocation() {
+    const inputDiv = document.getElementById('manualSimLocationInput');
+    const btn = document.getElementById('manualSimLocationBtn');
+    
+    if (inputDiv.style.display === 'none') {
+        inputDiv.style.display = 'block';
+        btn.textContent = '❌ İptal';
+        // Mevcut koordinatları doldur
+        if (simulationData.latitude && simulationData.longitude) {
+            document.getElementById('manualSimLat').value = simulationData.latitude;
+            document.getElementById('manualSimLon').value = simulationData.longitude;
+        }
+    } else {
+        inputDiv.style.display = 'none';
+        btn.textContent = '📝 Manuel Koordinat Gir';
+    }
+}
+
+// Manuel simülasyon konumu ayarla
+async function setManualSimLocation() {
+    const lat = parseFloat(document.getElementById('manualSimLat').value);
+    const lon = parseFloat(document.getElementById('manualSimLon').value);
+    
+    if (isNaN(lat) || isNaN(lon)) {
+        alert('❌ Lütfen geçerli koordinat girin.');
+        return;
+    }
+    
+    if (lat < 35 || lat > 43 || lon < 25 || lon > 45) {
+        if (!confirm('⚠️ Girilen koordinatlar Türkiye sınırları dışında görünüyor. Devam etmek istiyor musunuz?')) {
+            return;
+        }
+    }
+    
+    simulationData.latitude = lat;
+    simulationData.longitude = lon;
+    
+    // Adres bilgisini al
+    const address = await getAddressFromCoordinates(lat, lon);
+    simulationData.address = address || `${lat.toFixed(4)}°K, ${lon.toFixed(4)}°D`;
+    
+    // Konum bilgisini güncelle
+    updateSimulationLocationDisplay();
+    
+    // Manuel girişi kapat
+    toggleManualSimLocation();
+    
+    // Haritayı güncelle
+    initializeSimMap();
+}
+
+// Simülasyon konum bilgisini ekranda güncelle
+function updateSimulationLocationDisplay() {
+    const locationEl = document.getElementById('simLocation');
+    const addressEl = document.getElementById('simAddress');
+    
+    if (locationEl) {
+        locationEl.textContent = `${simulationData.latitude.toFixed(4)}°K, ${simulationData.longitude.toFixed(4)}°D`;
+    }
+    
+    if (addressEl) {
+        addressEl.textContent = simulationData.address || 'Adres bilgisi alınamadı';
+    }
+}
+
 // Initialize simulation map
 function initializeSimMap() {
-    const fireLat = 36.8;
-    const fireLon = 31.4;
+    const fireLat = simulationData.latitude || 36.8;
+    const fireLon = simulationData.longitude || 31.4;
     
     const trace = {
         type: 'scattermapbox',
@@ -1391,40 +2685,48 @@ function initializeSimMap() {
         lat: [fireLat],
         lon: [fireLon],
         marker: {
-            size: 20,
+            size: 30,
             color: '#ff6b6b',
             symbol: 'fire',
-            opacity: 0.8
+            opacity: 0.9,
+            line: { width: 2, color: 'white' }
         },
-        text: ['Yangın Başlangıç Noktası'],
-        name: 'Yangın'
+        text: [`🔥 Yangın Başlangıç Noktası<br>${simulationData.address || `${fireLat.toFixed(4)}°K, ${fireLon.toFixed(4)}°D`}`],
+        hovertemplate: '%{text}<extra></extra>',
+        name: '🔥 Yangın Başlangıcı'
     };
     
     const layout = {
         mapbox: {
             style: 'open-street-map',
             center: { lat: fireLat, lon: fireLon },
-            zoom: 11
+            zoom: 12
         },
         height: 400,
         margin: { l: 0, r: 0, t: 0, b: 0 }
     };
     
+    const config = {
+        responsive: true,
+        displayModeBar: false,
+        mapboxAccessToken: ''
+    };
+    
     if (typeof Plotly !== 'undefined') {
-        Plotly.newPlot('simMapContainer', [trace], layout, { responsive: true });
+        Plotly.newPlot('simMapContainer', [trace], layout, config);
     }
 }
 
 // Update simulation map
 function updateSimMap() {
-    const fireLat = 36.8;
-    const fireLon = 31.4;
+    const fireLat = simulationData.latitude || 36.8;
+    const fireLon = simulationData.longitude || 31.4;
     
     // Calculate fire radius in degrees (approximate)
     const radiusKm = Math.sqrt(simulationData.area / Math.PI);
     const radiusDeg = radiusKm / 111; // 1 degree ≈ 111 km
     
-    // Create circle points
+    // Create circle points for fire spread area
     const circlePoints = [];
     for (let i = 0; i <= 360; i += 10) {
         const rad = (i * Math.PI) / 180;
@@ -1434,6 +2736,17 @@ function updateSimMap() {
         });
     }
     
+    // Determine fire intensity color based on area
+    let fireColor = '#ff6b6b';
+    let fireSize = 30;
+    if (simulationData.area > 1) {
+        fireColor = '#d32f2f'; // Darker red for large fires
+        fireSize = 40;
+    } else if (simulationData.area > 0.5) {
+        fireColor = '#f44336'; // Medium red
+        fireSize = 35;
+    }
+    
     const traces = [
         {
             type: 'scattermapbox',
@@ -1441,13 +2754,15 @@ function updateSimMap() {
             lat: [fireLat],
             lon: [fireLon],
             marker: {
-                size: 20,
-                color: '#ff6b6b',
+                size: fireSize,
+                color: fireColor,
                 symbol: 'fire',
-                opacity: 0.8
+                opacity: 0.9,
+                line: { width: 3, color: 'white' }
             },
-            text: ['Yangın Merkezi'],
-            name: 'Yangın Merkezi'
+            text: [`🔥 Yangın Merkezi<br>Alan: ${simulationData.area.toFixed(3)} km²<br>Hız: ${simulationData.speed.toFixed(1)} km/h`],
+            hovertemplate: '%{text}<extra></extra>',
+            name: '🔥 Yangın Merkezi'
         },
         {
             type: 'scattermapbox',
@@ -1455,13 +2770,14 @@ function updateSimMap() {
             lat: circlePoints.map(p => p.lat),
             lon: circlePoints.map(p => p.lon),
             line: {
-                color: '#ff6b6b',
+                color: fireColor,
                 width: 3
             },
             fill: 'toself',
-            fillcolor: 'rgba(255, 107, 107, 0.3)',
-            name: 'Yanan Alan',
-            text: ['Yanan Alan: ' + simulationData.area.toFixed(3) + ' km²']
+            fillcolor: `rgba(255, 107, 107, ${Math.min(0.5, simulationData.area / 2)})`,
+            name: '🔥 Yanan Alan',
+            text: [`Yanan Alan: ${simulationData.area.toFixed(3)} km²`],
+            hovertemplate: '%{text}<extra></extra>'
         }
     ];
     
@@ -1469,14 +2785,20 @@ function updateSimMap() {
         mapbox: {
             style: 'open-street-map',
             center: { lat: fireLat, lon: fireLon },
-            zoom: 11
+            zoom: Math.max(10, 13 - Math.log10(simulationData.area + 0.01)) // Zoom based on fire size
         },
         height: 400,
         margin: { l: 0, r: 0, t: 0, b: 0 }
     };
     
+    const config = {
+        responsive: true,
+        displayModeBar: false,
+        mapboxAccessToken: ''
+    };
+    
     if (typeof Plotly !== 'undefined') {
-        Plotly.newPlot('simMapContainer', traces, layout, { responsive: true });
+        Plotly.newPlot('simMapContainer', traces, layout, config);
     }
 }
 
@@ -3081,5 +4403,981 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
+// ==================== LEAFLET.JS INTEGRATION ====================
+// Note: initLeafletMap fonksiyonu leaflet_map.js dosyasında tanımlı
+// Burada sadece referans bırakıyoruz, gerçek implementasyon leaflet_map.js'de
 
+// Update map location (Leaflet.js compatible)
+async function updateMapLocation(lat, lng, address = null) {
+    console.log('📍 updateMapLocation çağrıldı:', { lat, lng, address });
+    
+    // Update marker position (Leaflet.js)
+    if (dashboardMarker && dashboardMarker.setLatLng) {
+        dashboardMarker.setLatLng([lat, lng]);
+        console.log('✅ Marker güncellendi');
+    }
+    
+    // Center map (Leaflet.js)
+    if (dashboardMap && dashboardMap.setView) {
+        dashboardMap.setView([lat, lng], dashboardMap.getZoom() || 15);
+        console.log('✅ Harita merkezlendi');
+    }
+    
+    // Get address if not provided (Nominatim API)
+    if (!address) {
+        // Leaflet.js için reverseGeocode fonksiyonu leaflet_map.js'de tanımlı
+        if (typeof reverseGeocode === 'function') {
+            address = await reverseGeocode(lat, lng);
+            console.log('✅ Reverse geocoding yapıldı:', address);
+        }
+        if (!address) {
+            address = `${lat.toFixed(4)}°K, ${lng.toFixed(4)}°D`;
+        }
+    }
+    
+    // Update location data
+    currentLocation.lat = lat;
+    currentLocation.lon = lng;
+    currentLocation.address = address;
+    currentLocation.source = 'map';
+    
+    // Store for directions
+    if (dashboardMap) {
+        dashboardMap.destinationLocation = { lat, lng, address };
+        console.log('✅ Hedef konum kaydedildi (yol tarifi için):', dashboardMap.destinationLocation);
+    } else {
+        console.warn('⚠️ dashboardMap yok, hedef konum kaydedilemedi');
+    }
+    
+    // Find nearest city
+    const nearestCity = findNearestCity(lat, lng);
+    if (nearestCity) {
+        currentLocation.city = nearestCity.key;
+        const citySelect = document.getElementById('citySelect');
+        if (citySelect) {
+            citySelect.value = nearestCity.key;
+        }
+    }
+    
+    // Update display
+    updateLocationDisplay(address || `${lat.toFixed(4)}°K, ${lng.toFixed(4)}°D`, lat, lng, address);
+    
+    // Update risk
+    updateLocationRisk(lat, lng);
+}
 
+// Update location risk for given coordinates
+async function updateLocationRisk(lat, lng) {
+    const riskInfoBox = document.getElementById('riskInfoBox');
+    const riskValue = document.getElementById('riskValue');
+    const riskLevel = document.getElementById('riskLevel');
+    const riskDetails = document.getElementById('riskDetails');
+    
+    if (!riskInfoBox || !riskValue || !riskLevel || !riskDetails) {
+        return;
+    }
+    
+    // Show loading
+    riskInfoBox.style.display = 'block';
+    riskValue.textContent = '🔄 Hesaplanıyor...';
+    riskLevel.textContent = '';
+    riskDetails.textContent = '';
+    
+    try {
+        // Get weather data for coordinates
+        const weatherData = await fetchWeatherForCoordinates(lat, lng);
+        
+        // Calculate risk using ML model
+        const month = new Date().getMonth() + 1;
+        const dayOfYear = Math.floor((new Date() - new Date(new Date().getFullYear(), 0, 0)) / 1000 / 60 / 60 / 24);
+        
+        const features = {
+            temperature: weatherData?.temperature || 25,
+            humidity: weatherData?.humidity || 50,
+            wind_speed: weatherData?.windSpeed || 10,
+            wind_direction: weatherData?.windDirection || 180,
+            precipitation: weatherData?.precipitation || 0,
+            month: month,
+            day_of_year: dayOfYear,
+            historical_fires_nearby: 0,
+            vegetation_index: 0.6,
+            elevation: 500
+        };
+        
+        // Call ML prediction API
+        const response = await fetch(`${API_BASE_URL}/api/predict-risk`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(features)
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            if (data.success) {
+                const riskScore = data.risk_score;
+                const riskLevelText = data.risk_level;
+                
+                // Determine risk color
+                let riskColor = '#4CAF50'; // Green
+                let riskEmoji = '🟢';
+                if (riskScore >= 75) {
+                    riskColor = '#F44336'; // Red
+                    riskEmoji = '🔴';
+                } else if (riskScore >= 50) {
+                    riskColor = '#FF9800'; // Orange
+                    riskEmoji = '🟠';
+                } else if (riskScore >= 25) {
+                    riskColor = '#FFC107'; // Yellow
+                    riskEmoji = '🟡';
+                }
+                
+                // Update display
+                riskValue.textContent = `${riskEmoji} ${riskScore.toFixed(1)}/100`;
+                riskValue.style.color = riskColor;
+                
+                riskLevel.innerHTML = `<strong>Risk Seviyesi:</strong> ${riskLevelText}`;
+                riskLevel.style.color = riskColor;
+                
+                riskDetails.innerHTML = `
+                    <div style="margin-top: 8px;">
+                        <div>🌡️ Sıcaklık: ${features.temperature.toFixed(1)}°C</div>
+                        <div>💧 Nem: ${features.humidity.toFixed(0)}%</div>
+                        <div>💨 Rüzgar: ${features.wind_speed.toFixed(1)} km/h</div>
+                        <div>🌧️ Yağış: ${features.precipitation.toFixed(1)} mm</div>
+                    </div>
+                `;
+            } else {
+                throw new Error('Risk hesaplanamadı');
+            }
+        } else {
+            throw new Error('API hatası');
+        }
+    } catch (error) {
+        console.error('Risk hesaplama hatası:', error);
+        riskValue.textContent = '❌ Hesaplanamadı';
+        riskLevel.textContent = 'Risk hesaplanırken hata oluştu';
+        riskDetails.textContent = 'Lütfen daha sonra tekrar deneyin';
+    }
+}
+
+// Fetch weather data for coordinates
+async function fetchWeatherForCoordinates(lat, lng) {
+    try {
+        // Use Open-Meteo API (free, no key required)
+        const response = await fetch(
+            `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation&timezone=Europe/Istanbul`
+        );
+        
+        if (response.ok) {
+            const data = await response.json();
+            if (data.current) {
+                return {
+                    temperature: data.current.temperature_2m,
+                    humidity: data.current.relative_humidity_2m,
+                    windSpeed: data.current.wind_speed_10m,
+                    windDirection: data.current.wind_direction_10m,
+                    precipitation: data.current.precipitation || 0
+                };
+            }
+        }
+    } catch (error) {
+        console.warn('Hava durumu verisi alınamadı:', error);
+    }
+    
+    return null;
+}
+
+// Leaflet.js kullanılıyor - Google Maps kontrolü kaldırıldı
+
+// ==================== YANGIN DETAY VE UYARI SİSTEMİ ====================
+
+// Tüm yangın verilerini sakla (click event için)
+let allFireData = [];
+
+// Haritaya click event handler ekle
+function setupMapClickHandler(fireData) {
+    allFireData = fireData; // Tüm yangın verilerini sakla
+}
+
+// Harita tıklama event handler
+function handleMapClick(data) {
+    if (!data || !data.points || data.points.length === 0) return;
+    
+    const point = data.points[0];
+    const lat = point.lat;
+    const lon = point.lon;
+    
+    console.log('🗺️ Haritaya tıklandı:', lat, lon);
+    
+    // Tıklanan noktaya en yakın yangını bul
+    let closestFire = null;
+    let minDistance = Infinity;
+    
+    allFireData.forEach(fire => {
+        const fireLat = fire.latitude || fire.lat;
+        const fireLon = fire.longitude || fire.lon;
+        
+        if (fireLat && fireLon) {
+            const distance = Math.sqrt(
+                Math.pow(fireLat - lat, 2) + Math.pow(fireLon - lon, 2)
+            );
+            
+            if (distance < minDistance) {
+                minDistance = distance;
+                closestFire = fire;
+            }
+        }
+    });
+    
+    // Eğer yakın bir yangın bulunduysa (0.05 derece tolerans - yaklaşık 5 km)
+    if (closestFire && minDistance < 0.05) {
+        console.log('🔥 Yakın yangın bulundu:', closestFire, 'Mesafe:', minDistance);
+        showFireDetailModal(closestFire);
+    } else {
+        console.log('⚠️ Tıklanan noktada yangın bulunamadı. Mesafe:', minDistance);
+    }
+}
+
+// Yangın detay modal'ını göster
+function showFireDetailModal(fire) {
+    const modal = document.getElementById('fireDetailModal');
+    const content = document.getElementById('fireDetailContent');
+    
+    if (!modal || !content) return;
+    
+    const intensityScore = fire.intensity_score || fire.risk_score || 'N/A';
+    const intensityLevel = fire.intensity_level || fire.risk_level || 'medium';
+    
+    // Şiddet seviyesi etiketi
+    const intensityLabels = {
+        'low': 'Düşük Şiddet',
+        'medium': 'Orta Şiddet',
+        'high': 'Yüksek Şiddet',
+        'critical': 'Kritik Şiddet'
+    };
+    
+    const intensityLabel = intensityLabels[intensityLevel] || 'Bilinmeyen';
+    
+    // Şiddet rengi
+    const intensityColors = {
+        'low': '#4CAF50',
+        'medium': '#FFC107',
+        'high': '#FF9800',
+        'critical': '#F44336'
+    };
+    
+    const intensityColor = intensityColors[intensityLevel] || '#666';
+    
+    content.innerHTML = `
+        <div style="padding: 20px;">
+            <div style="background: ${intensityColor}20; padding: 15px; border-radius: 8px; border-left: 4px solid ${intensityColor}; margin-bottom: 15px;">
+                <h3 style="color: ${intensityColor}; margin: 0 0 10px 0;">🔥 ${intensityLabel}</h3>
+                <div style="font-size: 1.5em; font-weight: bold; color: ${intensityColor};">
+                    Şiddet Skoru: ${intensityScore}/100
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                <div style="background: #f0f0f0; padding: 12px; border-radius: 5px;">
+                    <strong>📍 Konum</strong><br>
+                    <div style="margin-top: 5px;">
+                        Enlem: ${(fire.latitude || fire.lat || 0).toFixed(4)}°<br>
+                        Boylam: ${(fire.longitude || fire.lon || 0).toFixed(4)}°
+                    </div>
+                </div>
+                
+                <div style="background: #f0f0f0; padding: 12px; border-radius: 5px;">
+                    <strong>📅 Tespit Bilgisi</strong><br>
+                    <div style="margin-top: 5px;">
+                        Tarih: ${fire.acq_date || 'N/A'}<br>
+                        Saat: ${fire.acq_time || 'N/A'}
+                    </div>
+                </div>
+            </div>
+            
+            <div style="background: #f0f0f0; padding: 12px; border-radius: 5px; margin-bottom: 15px;">
+                <strong>🛰️ Uydu Bilgileri</strong><br>
+                <div style="margin-top: 5px;">
+                    Uydu: ${fire.satellite || 'N/A'}<br>
+                    Tespit Güveni: ${fire.confidence || 'N/A'}%<br>
+                    Parlaklık: ${fire.brightness || 'N/A'} (yüksek = büyük yangın)<br>
+                    FRP (Fire Radiative Power): ${fire.frp ? fire.frp.toFixed(2) : 'N/A'} MW<br>
+                    Gündüz/Gece: ${fire.daynight === 'D' ? 'Gündüz' : fire.daynight === 'N' ? 'Gece' : 'N/A'}
+                </div>
+            </div>
+            
+            <div style="background: #fff3cd; padding: 12px; border-radius: 5px; border-left: 4px solid #ff9800;">
+                <strong>⚠️ Önemli Not:</strong><br>
+                Bu yangın NASA FIRMS uydu sistemi tarafından tespit edilmiştir. 
+                Gerçek zamanlı veriler 5 dakikada bir güncellenir.
+            </div>
+            
+            <div style="margin-top: 15px; text-align: center;">
+                <button onclick="closeFireDetailModal()" class="btn" style="padding: 10px 20px;">
+                    Kapat
+                </button>
+            </div>
+        </div>
+    `;
+    
+    modal.style.display = 'block';
+}
+
+// Yangın detay modal'ını kapat
+function closeFireDetailModal() {
+    const modal = document.getElementById('fireDetailModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Modal dışına tıklanınca kapat
+window.onclick = function(event) {
+    const modal = document.getElementById('fireDetailModal');
+    if (event.target === modal) {
+        closeFireDetailModal();
+    }
+}
+
+// Yeni yangınları kontrol et
+function checkForNewFires(currentFireData) {
+    if (!fireNotificationEnabled) return;
+    
+    if (previousFireData.length === 0) {
+        // İlk yükleme, sadece kaydet
+        previousFireData = currentFireData.map(f => ({
+            latitude: f.latitude || f.lat,
+            longitude: f.longitude || f.lon,
+            brightness: f.brightness,
+            confidence: f.confidence,
+            acq_date: f.acq_date,
+            acq_time: f.acq_time
+        }));
+        return;
+    }
+    
+    // Yeni yangınları bul
+    const newFires = [];
+    
+    currentFireData.forEach(currentFire => {
+        const currentLat = currentFire.latitude || currentFire.lat;
+        const currentLon = currentFire.longitude || currentFire.lon;
+        
+        // Önceki verilerde bu yangın var mı kontrol et
+        const isNew = !previousFireData.some(prevFire => {
+            const prevLat = prevFire.latitude || prevFire.lat;
+            const prevLon = prevFire.longitude || prevFire.lon;
+            
+            // Aynı konumda (0.01 derece tolerans) ve aynı tarih/saatte yangın varsa eski yangın
+            const distance = Math.sqrt(
+                Math.pow(prevLat - currentLat, 2) + Math.pow(prevLon - currentLon, 2)
+            );
+            
+            return distance < 0.01 && 
+                   prevFire.acq_date === currentFire.acq_date &&
+                   prevFire.acq_time === currentFire.acq_time;
+        });
+        
+        if (isNew) {
+            newFires.push(currentFire);
+        }
+    });
+    
+    // Yeni yangın varsa uyarı ver
+    if (newFires.length > 0) {
+        console.log(`🚨 ${newFires.length} yeni yangın tespit edildi!`);
+        showNewFireAlert(newFires);
+    }
+    
+    // Mevcut verileri güncelle
+    previousFireData = currentFireData.map(f => ({
+        latitude: f.latitude || f.lat,
+        longitude: f.longitude || f.lon,
+        brightness: f.brightness,
+        confidence: f.confidence,
+        acq_date: f.acq_date,
+        acq_time: f.acq_time
+    }));
+}
+
+// Yeni yangın uyarısı göster
+function showNewFireAlert(newFires) {
+    // Ses uyarısı çal
+    playFireAlertSound();
+    
+    // Browser notification
+    if (notificationPermission && 'Notification' in window) {
+        const notification = new Notification('🚨 Yeni Yangın Tespit Edildi!', {
+            body: `${newFires.length} yeni yangın tespit edildi. Haritayı kontrol edin.`,
+            icon: '/icon-192.png',
+            badge: '/icon-192.png',
+            tag: 'new-fire-alert',
+            requireInteraction: true
+        });
+        
+        notification.onclick = function() {
+            window.focus();
+            // Harita sekmesine geç
+            const mapTab = document.querySelector('[data-tab="map"]');
+            if (mapTab) {
+                mapTab.click();
+            }
+            notification.close();
+        };
+    }
+    
+    // Banner uyarısı göster
+    const banner = document.getElementById('newFireAlertBanner');
+    const details = document.getElementById('newFireAlertDetails');
+    
+    if (banner && details) {
+        const criticalFires = newFires.filter(f => {
+            const level = f.intensity_level || f.risk_level || 'medium';
+            return level === 'critical' || level === 'high';
+        });
+        
+        let alertText = `${newFires.length} yeni yangın tespit edildi!`;
+        if (criticalFires.length > 0) {
+            alertText += ` (${criticalFires.length} kritik/yüksek şiddet)`;
+        }
+        
+        details.innerHTML = alertText + '<br><small>Haritada görmek için tıklayın</small>';
+        
+        banner.style.display = 'block';
+        banner.style.animation = 'slideDown 0.5s ease-out';
+        
+        // Banner'a tıklanınca harita sekmesine geç
+        banner.onclick = function() {
+            const mapTab = document.querySelector('[data-tab="map"]');
+            if (mapTab) {
+                mapTab.click();
+            }
+            closeNewFireAlert();
+        };
+        
+        // 10 saniye sonra otomatik kapat
+        setTimeout(() => {
+            closeNewFireAlert();
+        }, 10000);
+    }
+}
+
+// Yeni yangın uyarı banner'ını kapat
+function closeNewFireAlert() {
+    const banner = document.getElementById('newFireAlertBanner');
+    if (banner) {
+        banner.style.animation = 'slideUp 0.5s ease-out';
+        setTimeout(() => {
+            banner.style.display = 'none';
+        }, 500);
+    }
+}
+
+// Yangın uyarı sesi çal
+function playFireAlertSound() {
+    try {
+        // Web Audio API ile basit bir uyarı sesi oluştur
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.frequency.value = 800;
+        oscillator.type = 'sine';
+        
+        gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+        
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.5);
+        
+        // İkinci bip
+        setTimeout(() => {
+            const oscillator2 = audioContext.createOscillator();
+            const gainNode2 = audioContext.createGain();
+            
+            oscillator2.connect(gainNode2);
+            gainNode2.connect(audioContext.destination);
+            
+            oscillator2.frequency.value = 800;
+            oscillator2.type = 'sine';
+            
+            gainNode2.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gainNode2.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+            
+            oscillator2.start(audioContext.currentTime);
+            oscillator2.stop(audioContext.currentTime + 0.5);
+        }, 300);
+    } catch (error) {
+        console.warn('Ses uyarısı çalınamadı:', error);
+    }
+}
+
+// Bildirim izni iste
+async function requestNotificationPermission() {
+    if (!('Notification' in window)) {
+        alert('❌ Tarayıcınız bildirimleri desteklemiyor.');
+        return;
+    }
+    
+    if (Notification.permission === 'granted') {
+        notificationPermission = true;
+        alert('✅ Bildirim izni zaten verilmiş.');
+        return;
+    }
+    
+    if (Notification.permission !== 'denied') {
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+            notificationPermission = true;
+            alert('✅ Bildirim izni verildi! Yeni yangın tespit edildiğinde bildirim alacaksınız.');
+        } else {
+            alert('❌ Bildirim izni reddedildi. Tarayıcı ayarlarından izin verebilirsiniz.');
+        }
+    } else {
+        alert('❌ Bildirim izni daha önce reddedilmiş. Tarayıcı ayarlarından açmanız gerekiyor.');
+    }
+}
+
+// Bildirimleri aç/kapat
+function toggleFireNotifications() {
+    const checkbox = document.getElementById('fireNotificationToggle');
+    fireNotificationEnabled = checkbox.checked;
+    
+    if (fireNotificationEnabled) {
+        console.log('🔔 Yangın bildirimleri açıldı');
+        // İzin kontrolü
+        if ('Notification' in window && Notification.permission === 'default') {
+            requestNotificationPermission();
+        }
+    } else {
+        console.log('🔕 Yangın bildirimleri kapatıldı');
+    }
+}
+
+// Sayfa yüklendiğinde bildirim iznini kontrol et
+document.addEventListener('DOMContentLoaded', function() {
+    if ('Notification' in window) {
+        notificationPermission = Notification.permission === 'granted';
+    }
+});
+
+// ==================== YOL TARİFİ FONKSİYONLARI ====================
+
+// Get current location for directions
+function getCurrentLocationForDirections() {
+    console.log('🗺️ ========== YOL TARİFİ BUTONU TIKLANDI ==========');
+    console.log('📍 dashboardMap:', dashboardMap);
+    console.log('📍 destinationLocation:', dashboardMap ? dashboardMap.destinationLocation : 'dashboardMap yok');
+    
+    if (!dashboardMap || !dashboardMap.destinationLocation) {
+        console.error('❌ Hata: Harita veya hedef konum yok!');
+        alert('⚠️ Lütfen önce haritada bir konum seçin veya adres arayın.');
+        return;
+    }
+    
+    const dest = dashboardMap.destinationLocation;
+    console.log('✅ Hedef konum bulundu:', dest);
+    
+    // Kullanıcının mevcut konumunu al (GPS)
+    console.log('📍 GPS konumu alınıyor...');
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                const origin = {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude
+                };
+                console.log('✅ GPS konumu alındı:', origin);
+                console.log('🎯 Hedef konum:', { lat: dest.lat, lng: dest.lng, address: dest.address });
+                console.log('🗺️ getDirections fonksiyonu çağrılıyor...');
+                getDirections(origin, { lat: dest.lat, lng: dest.lng }, dest.address);
+            },
+            (error) => {
+                console.warn('GPS konumu alınamadı, varsayılan konum kullanılıyor:', error);
+                // Varsayılan konum (Ankara)
+                const origin = { lat: 39.9334, lng: 32.8597 };
+                getDirections(origin, { lat: dest.lat, lng: dest.lng }, dest.address);
+            }
+        );
+    } else {
+        // GPS desteklenmiyorsa varsayılan konum
+        const origin = { lat: 39.9334, lng: 32.8597 };
+        getDirections(origin, { lat: dest.lat, lng: dest.lng }, dest.address);
+    }
+}
+
+// Get directions between two points using Leaflet Routing Machine
+function getDirections(origin, destination, destinationName = 'Hedef Konum') {
+    console.log('🗺️ ========== YOL TARİFİ BAŞLATILIYOR ==========');
+    console.log('📍 Başlangıç:', origin);
+    console.log('🎯 Hedef:', destination);
+    console.log('📝 Hedef Adı:', destinationName);
+    
+    // Leaflet Routing Machine kontrol et
+    if (typeof L === 'undefined' || typeof L.Routing === 'undefined') {
+        alert('⚠️ Leaflet Routing Machine plugin yüklenmedi. Sayfayı yenileyin.');
+        console.error('Leaflet Routing Machine yüklenmedi');
+        return;
+    }
+    
+    // Dashboard map kontrol et
+    if (typeof dashboardMap === 'undefined' || !dashboardMap) {
+        alert('⚠️ Harita yüklenmedi. Lütfen harita sekmesini açın.');
+        console.error('Dashboard map bulunamadı');
+        return;
+    }
+    
+    // Önceki routing'i temizle
+    if (routingControl) {
+        dashboardMap.removeControl(routingControl);
+        routingControl = null;
+    }
+    
+    try {
+        console.log('🔧 Routing control oluşturuluyor...');
+        // OSRM Routing Service kullan (ücretsiz, API key gerektirmez)
+        routingControl = L.Routing.control({
+            waypoints: [
+                L.latLng(origin.lat, origin.lng),
+                L.latLng(destination.lat, destination.lng)
+            ],
+            router: L.Routing.osrmv1({
+                serviceUrl: 'https://router.project-osrm.org/route/v1',
+                profile: 'driving', // 'driving', 'walking', 'cycling'
+                timeout: 30000
+            }),
+            routeWhileDragging: false,
+            addWaypoints: false,
+            showAlternatives: false,
+            show: false, // Route panelini gizle (sadece çizgiyi göster)
+            collapsible: false,
+            lineOptions: {
+                styles: [
+                    {color: '#3388ff', opacity: 1.0, weight: 8}
+                ]
+            },
+            createMarker: function(i, waypoint, n) {
+                // Marker oluştur - Custom SVG icon kullan
+                let marker;
+                
+                // Başlangıç noktası için yeşil marker
+                if (i === 0) {
+                    // Yeşil SVG marker icon
+                    const greenIcon = L.divIcon({
+                        className: 'custom-route-marker',
+                        html: `
+                            <div style="
+                                background-color: #4CAF50;
+                                width: 32px;
+                                height: 32px;
+                                border-radius: 50% 50% 50% 0;
+                                transform: rotate(-45deg);
+                                border: 3px solid white;
+                                box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+                                position: relative;
+                            ">
+                                <div style="
+                                    position: absolute;
+                                    top: 50%;
+                                    left: 50%;
+                                    transform: translate(-50%, -50%) rotate(45deg);
+                                    color: white;
+                                    font-size: 18px;
+                                    font-weight: bold;
+                                    line-height: 1;
+                                ">📍</div>
+                            </div>
+                        `,
+                        iconSize: [32, 32],
+                        iconAnchor: [16, 32],
+                        popupAnchor: [0, -32]
+                    });
+                    marker = L.marker(waypoint.latLng, { icon: greenIcon }).bindPopup('📍 Başlangıç');
+                }
+                // Hedef noktası için kırmızı marker
+                else {
+                    // Kırmızı SVG marker icon
+                    const redIcon = L.divIcon({
+                        className: 'custom-route-marker',
+                        html: `
+                            <div style="
+                                background-color: #F44336;
+                                width: 32px;
+                                height: 32px;
+                                border-radius: 50% 50% 50% 0;
+                                transform: rotate(-45deg);
+                                border: 3px solid white;
+                                box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+                                position: relative;
+                            ">
+                                <div style="
+                                    position: absolute;
+                                    top: 50%;
+                                    left: 50%;
+                                    transform: translate(-50%, -50%) rotate(45deg);
+                                    color: white;
+                                    font-size: 18px;
+                                    font-weight: bold;
+                                    line-height: 1;
+                                ">🎯</div>
+                            </div>
+                        `,
+                        iconSize: [32, 32],
+                        iconAnchor: [16, 32],
+                        popupAnchor: [0, -32]
+                    });
+                    marker = L.marker(waypoint.latLng, { icon: redIcon }).bindPopup('🎯 Hedef: ' + destinationName);
+                }
+                
+                console.log('📍 Marker oluşturuldu:', i === 0 ? 'Başlangıç (yeşil)' : 'Hedef (kırmızı)', waypoint.latLng);
+                return marker;
+            }
+        });
+        
+        // Route hesaplandığında bilgi göster - ÖNCE event listener ekle
+        routingControl.on('routesfound', function(e) {
+            console.log('🔍 routesfound event tetiklendi!', e);
+            const routes = e.routes;
+            console.log('📍 Routes objesi:', routes);
+            console.log('✅ Route bulundu, route sayısı:', routes ? routes.length : 0);
+            
+            if (routes && routes.length > 0) {
+                const route = routes[0];
+                console.log('📍 İlk route detayları:', route);
+                
+                const distance = (route.summary.totalDistance / 1000).toFixed(2); // km
+                const duration = Math.round(route.summary.totalTime / 60); // dakika
+                
+                console.log('✅ Yol tarifi hesaplandı:', { distance: distance + ' km', duration: duration + ' dakika' });
+                
+                // Route koordinatlarını kontrol et
+                if (route.coordinates && route.coordinates.length > 0) {
+                    console.log('✅ Route koordinatları var:', route.coordinates.length, 'nokta');
+                    
+                    // Haritayı route'a göre fit et (tüm route görünsün)
+                    try {
+                        const bounds = L.latLngBounds(route.coordinates);
+                        dashboardMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+                        console.log('✅ Harita route\'a göre ayarlandı, bounds:', bounds.toBBoxString());
+                    } catch (err) {
+                        console.warn('⚠️ Harita fit edilemedi:', err);
+                    }
+                } else {
+                    console.warn('⚠️ Route koordinatları bulunamadı');
+                }
+                
+                // Kullanıcıya bilgi göster
+                const message = `✅ Yol tarifi hazır!\nMesafe: ${distance} km\nSüre: ${duration} dakika`;
+                console.log(message);
+            } else {
+                console.warn('⚠️ Route bulunamadı veya routes boş');
+            }
+        });
+        
+        // Hata durumunda - ÖNCE event listener ekle (addTo'dan önce)
+        routingControl.on('routingerror', function(e) {
+            console.error('❌ Yol tarifi hatası:', e);
+            console.error('Hata detayları:', e.error);
+            alert('⚠️ Yol tarifi alınamadı. Lütfen farklı bir rota deneyin.\n\nHata: ' + (e.error?.message || 'Bilinmeyen hata'));
+            if (routingControl) {
+                dashboardMap.removeControl(routingControl);
+                routingControl = null;
+            }
+        });
+        
+        // Şimdi haritaya ekle (tüm event listener'lar eklendikten sonra)
+        console.log('✅ Routing control haritaya ekleniyor...');
+        routingControl.addTo(dashboardMap);
+        console.log('✅ Routing control haritaya eklendi');
+        
+        // Route'u hesaplamak için plan metodunu çağır
+        try {
+            console.log('⏳ Route hesaplanıyor (OSRM servisi çağrılıyor)...');
+            // Routing control otomatik olarak route hesaplayacak
+            // Plan metodu ile route'u zorla hesapla
+            if (routingControl.plan) {
+                routingControl.plan();
+                console.log('✅ Plan metodu çağrıldı');
+            }
+        } catch (planError) {
+            console.warn('⚠️ Plan metodu hatası:', planError);
+            // Hata olsa bile routing control çalışmaya devam edecek
+        }
+        
+    } catch (error) {
+        console.error('❌ Routing oluşturma hatası:', error);
+        alert('⚠️ Yol tarifi oluşturulamadı: ' + error.message);
+    }
+}
+
+// Open route in phone's map app (Google Maps, Apple Maps)
+function openInPhoneMapApp() {
+    console.log('📱 Telefon haritasında açılıyor...');
+    
+    // Hedef konum kontrolü
+    if (!dashboardMap || !dashboardMap.destinationLocation) {
+        alert('⚠️ Lütfen önce haritada bir konum seçin veya adres arayın.');
+        return;
+    }
+    
+    const dest = dashboardMap.destinationLocation;
+    const destLat = dest.lat;
+    const destLng = dest.lng;
+    
+    // Kullanıcının mevcut konumunu al (GPS)
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                const originLat = position.coords.latitude;
+                const originLng = position.coords.longitude;
+                
+                // Platform tespiti
+                const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+                const isIOS = /iPad|iPhone|iPod/.test(userAgent) && !window.MSStream;
+                const isAndroid = /android/i.test(userAgent);
+                
+                let mapUrl = '';
+                
+                if (isIOS) {
+                    // iOS için Apple Maps
+                    // directions mode ile başlangıç ve bitiş noktalarını belirt
+                    mapUrl = `maps://maps.apple.com/?saddr=${originLat},${originLng}&daddr=${destLat},${destLng}&dirflg=d`;
+                    console.log('🍎 iOS cihaz tespit edildi, Apple Maps açılıyor...');
+                } else if (isAndroid) {
+                    // Android için Google Maps
+                    mapUrl = `google.navigation:q=${destLat},${destLng}`;
+                    console.log('🤖 Android cihaz tespit edildi, Google Maps açılıyor...');
+                } else {
+                    // Diğer platformlar için Google Maps web
+                    mapUrl = `https://www.google.com/maps/dir/${originLat},${originLng}/${destLat},${destLng}`;
+                    console.log('🌐 Web platformu, Google Maps web açılıyor...');
+                }
+                
+                console.log('📍 Harita URL:', mapUrl);
+                console.log('📍 Başlangıç:', originLat, originLng);
+                console.log('🎯 Hedef:', destLat, destLng);
+                
+                // Harita uygulamasını aç
+                window.location.href = mapUrl;
+            },
+            (error) => {
+                console.warn('GPS konumu alınamadı, sadece hedef konum kullanılıyor:', error);
+                
+                // GPS olmadan sadece hedef konumu aç
+                const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+                const isIOS = /iPad|iPhone|iPod/.test(userAgent) && !window.MSStream;
+                const isAndroid = /android/i.test(userAgent);
+                
+                let mapUrl = '';
+                
+                if (isIOS) {
+                    mapUrl = `maps://maps.apple.com/?q=${destLat},${destLng}`;
+                } else if (isAndroid) {
+                    mapUrl = `geo:${destLat},${destLng}?q=${destLat},${destLng}`;
+                } else {
+                    mapUrl = `https://www.google.com/maps/search/?api=1&query=${destLat},${destLng}`;
+                }
+                
+                console.log('📍 Harita URL (GPS olmadan):', mapUrl);
+                window.location.href = mapUrl;
+            }
+        );
+    } else {
+        // GPS desteklenmiyorsa sadece hedef konumu aç
+        const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+        const isIOS = /iPad|iPhone|iPod/.test(userAgent) && !window.MSStream;
+        const isAndroid = /android/i.test(userAgent);
+        
+        let mapUrl = '';
+        
+        if (isIOS) {
+            mapUrl = `maps://maps.apple.com/?q=${destLat},${destLng}`;
+        } else if (isAndroid) {
+            mapUrl = `geo:${destLat},${destLng}?q=${destLat},${destLng}`;
+        } else {
+            mapUrl = `https://www.google.com/maps/search/?api=1&query=${destLat},${destLng}`;
+        }
+        
+        console.log('📍 Harita URL (GPS desteklenmiyor):', mapUrl);
+        window.location.href = mapUrl;
+    }
+}
+
+// Clear directions (Leaflet Routing Machine route'unu temizle)
+function clearDirections() {
+    console.log('🗺️ Yol tarifi temizleniyor');
+    
+    if (routingControl && typeof dashboardMap !== 'undefined' && dashboardMap) {
+        dashboardMap.removeControl(routingControl);
+        routingControl = null;
+        console.log('✅ Yol tarifi temizlendi');
+    }
+    
+    // HTML'deki directions bilgisini de temizle (eski kod)
+    const locationInfo = document.getElementById('locationInfo');
+    if (locationInfo) {
+        const existingDirections = locationInfo.querySelector('.directions-info');
+        if (existingDirections) {
+            existingDirections.remove();
+        }
+    }
+}
+
+// Get current location using GPS (for dashboard)
+function getCurrentLocationGPS() {
+    if (!navigator.geolocation) {
+        alert('❌ Tarayıcınız konum servislerini desteklemiyor.');
+        return;
+    }
+    
+    const button = event.target;
+    const originalText = button.textContent;
+    button.textContent = '⏳ Konum alınıyor...';
+    button.disabled = true;
+    
+    navigator.geolocation.getCurrentPosition(
+        (position) => {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            
+            console.log('📍 GPS konumu alındı:', lat, lng);
+            
+            // Update map location
+            updateMapLocation(lat, lng, null);
+            
+            button.textContent = originalText;
+            button.disabled = false;
+        },
+        (error) => {
+            console.error('❌ GPS konumu alınamadı:', error);
+            let errorMessage = 'Konum alınamadı. ';
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    errorMessage += 'Konum izni reddedildi. Lütfen tarayıcı ayarlarından izin verin.';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    errorMessage += 'Konum bilgisi mevcut değil.';
+                    break;
+                case error.TIMEOUT:
+                    errorMessage += 'Konum alma işlemi zaman aşımına uğradı.';
+                    break;
+                default:
+                    errorMessage += 'Bilinmeyen bir hata oluştu.';
+                    break;
+            }
+            alert('❌ ' + errorMessage);
+            button.textContent = originalText;
+            button.disabled = false;
+        },
+        {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+        }
+    );
+}
