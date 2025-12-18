@@ -1368,6 +1368,7 @@ async function refreshFireData() {
         } else {
             // Fallback: Eski Plotly yöntemi
             updateMapWithFireData(fireData, currentCity);
+        }
         alert(`✅ Harita güncellendi! ${fireData.length} aktif yangın noktası bulundu.`);
     } else {
         initializeMapWithSampleData(currentCity);
